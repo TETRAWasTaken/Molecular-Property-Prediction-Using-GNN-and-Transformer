@@ -70,19 +70,6 @@ python src/data/preprocess.py --workers 8
 
 ---
 
-## 🧠 Training
-
-Initiate the training loop with Mixed Precision and Weights & Biases (WandB) logging:
-
-```bash
-python train.py \
-    --batch_size 64 \
-    --epochs 100 \
-    --lr 0.001 \
-    --gnn_type "gin" \
-    --fusion_type "concat"
-```
-
 ### Monitoring
 The training script logs separate loss curves to WandB for each dataset:
 - `loss/qm7`
