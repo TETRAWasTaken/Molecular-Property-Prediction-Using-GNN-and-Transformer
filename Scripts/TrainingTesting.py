@@ -18,13 +18,13 @@ class TrainingTesting(GIN):
                  dropout: float = 0.2,
                  learning_rate: float = 0.001,
                  weight_decay: float = 5e-4,
-                 device: str = "cuda"):
+                 device: str = "mps"):
         
         # 1. Initialize the GIN Architecture (Superclass)
         super().__init__(node_in_dim, edge_in_dim, hidden_dim, output_dim, num_layer=3, dropout=dropout)
         
         # 2. Setup Device
-        self.device_name = device if torch.cuda.is_available() else "cpu"
+        self.device_name = device
         self.to(self.device_name)
         
         # 3. Optimization Components

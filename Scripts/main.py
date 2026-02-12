@@ -26,13 +26,13 @@ def main():
     # ==================== Hyperparameters ====================
     BATCH_SIZE = 64
     HIDDEN_DIM = 128
-    OUTPUT_DIM = 12       # 4 QM8 + 8 QM9 targets
+    OUTPUT_DIM = 12
     DROPOUT = 0.2
     LEARNING_RATE = 0.001
     WEIGHT_DECAY = 5e-4
-    EPOCHS = 50
+    EPOCHS = 25
     PATIENCE = 20
-    DEVICE = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+    DEVICE = torch.device("cuda") if torch.backends.mps.is_available() else "cpu"
 
     # ==================== 1. Preprocessing ====================
     pipeline = MolecularPropertyPipeline(qm8_path, qm9_path)
