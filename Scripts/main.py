@@ -9,8 +9,13 @@ def main():
     parser.add_argument("--qm8_path", type=str, default=None, help="Path to qm8.csv")
     parser.add_argument("--qm9_path", type=str, default=None, help="Path to qm9.csv")
     parser.add_argument("--save_path", type=str, default=None, help="Path to save the trained model")
-    
+    parser.add_argument("--check_device", type=bool, default=False, help="Check if GPU is available")
+
     args = parser.parse_args()
+
+    if args.check_device:
+        print("GPU") if torch.backends.mps.is_available() else print("CPU")
+        return
 
     # Define base directory
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,7 +32,7 @@ def main():
     WEIGHT_DECAY = 5e-4
     EPOCHS = 50
     PATIENCE = 20
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    DEVICE = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
 
     # ==================== 1. Preprocessing ====================
     pipeline = MolecularPropertyPipeline(qm8_path, qm9_path)
