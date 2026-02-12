@@ -171,8 +171,13 @@ class MolecularPropertyPipeline:
             edge_indices.append([j, i])
             edge_attrs.append(bond_feats)
         
-        edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
-        edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
+        # Handle molecules with no bonds (single atoms)
+        if len(edge_indices) == 0:
+            edge_index = torch.empty((2, 0), dtype=torch.long)
+            edge_attr = torch.empty((0, 3), dtype=torch.float)
+        else:
+            edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+            edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
         
         # --- Targets and Masks ---
         y = y_values.clone().detach().view(1, -1)
@@ -210,30 +215,47 @@ class MolecularPropertyPipeline:
         return self.graphs
     
     # ==================== DataLoader ====================
-    def create_dataloader(self, batch_size: int = 32, shuffle: bool = True):
+    def create_dataloader(self, batch_size: int = 32, train_ratio: float = 0.8, val_ratio: float = 0.1):
         """
-        Create a PyTorch Geometric DataLoader for batch processing.
+        Split graphs into train/val/test sets and create DataLoaders.
         
         Args:
             batch_size: Number of graphs per batch
-            shuffle: Whether to shuffle the data
+            train_ratio: Fraction of data for training
+            val_ratio: Fraction of data for validation (rest goes to test)
             
         Returns:
-            DataLoader object
+            Tuple of (train_loader, val_loader, test_loader)
         """
-        print(f"\nCreating DataLoader (batch_size={batch_size})...")
-        self.data_loader = DataLoader(self.graphs, batch_size=batch_size, shuffle=shuffle)
+        print(f"\nCreating DataLoaders (batch_size={batch_size})...")
+        
+        # Shuffle indices
+        num_graphs = len(self.graphs)
+        indices = torch.randperm(num_graphs).tolist()
+        
+        train_end = int(num_graphs * train_ratio)
+        val_end = int(num_graphs * (train_ratio + val_ratio))
+        
+        train_graphs = [self.graphs[i] for i in indices[:train_end]]
+        val_graphs = [self.graphs[i] for i in indices[train_end:val_end]]
+        test_graphs = [self.graphs[i] for i in indices[val_end:]]
+        
+        self.train_loader = DataLoader(train_graphs, batch_size=batch_size, shuffle=True)
+        self.val_loader = DataLoader(val_graphs, batch_size=batch_size, shuffle=False)
+        self.test_loader = DataLoader(test_graphs, batch_size=batch_size, shuffle=False)
+        
+        print(f"Train: {len(train_graphs)} | Val: {len(val_graphs)} | Test: {len(test_graphs)}")
         
         # Get info from first batch
-        first_batch = next(iter(self.data_loader))
-        print(f"Number of batches: {len(self.data_loader)}")
+        first_batch = next(iter(self.train_loader))
+        print(f"Number of batches: {len(self.train_loader)}")
         print(f"Molecules per batch: {first_batch.num_graphs}")
         print(f"Atoms per batch: {first_batch.x.shape[0]}")
         print(f"Node features: {first_batch.num_node_features}")
         print(f"Edge features: {first_batch.edge_attr.shape[1]}")
         print(f"Target shape per batch: {first_batch.y.shape}")
         
-        return self.data_loader
+        return self.train_loader, self.val_loader, self.test_loader
     
     # ==================== Full Pipeline ====================
     def run_full_pipeline(self, batch_size: int = 32):
@@ -269,14 +291,14 @@ class MolecularPropertyPipeline:
         # Step 6: Generate graphs
         self.generate_graphs()
         
-        # Step 7: Create DataLoader
+        # Step 7: Create train/val/test DataLoaders
         self.create_dataloader(batch_size=batch_size)
         
         print("\n" + "=" * 60)
         print("Pipeline Complete!")
         print("=" * 60)
         
-        return self.data_loader
+        return self.train_loader, self.val_loader, self.test_loader
     
     # ==================== Utility Methods ====================
     def get_summary(self):

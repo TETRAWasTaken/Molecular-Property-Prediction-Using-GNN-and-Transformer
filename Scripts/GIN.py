@@ -1,15 +1,7 @@
-import pandas as pd
-import numpy as np
-from rdkit import Chem
 import torch
-from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
-import networkx as nx
-
-from typing import Any
 from torch.nn import Linear, ReLU, Sequential, BatchNorm1d, Dropout
-from torch_geometric.nn import GINConv, GINEConv
-from torch_geometric.nn import global_add_pool, global_mean_pool
+from torch_geometric.nn import GINEConv
+from torch_geometric.nn import global_add_pool
 import torch_geometric
 import torch.nn.functional as F
 
@@ -24,72 +16,79 @@ class GIN(torch.nn.Module):
     :param output_dim: The dimensionality of the output layer, which corresponds to the number of target properties to predict.
     :param dropout: The dropout rate for regularization during training.
     """
-    def __init__(self, node_in_dim: int = 6,
+    def __init__(self, 
+                 node_in_dim: int = 6,
                  edge_in_dim: int = 3,
                  hidden_dim: int = 128,
                  output_dim: int = 12,
+                 num_layer: int = 3,
                  dropout: float = 0.2):
         super(GIN, self).__init__()
 
+        self.num_layer = num_layer
+        self.dropout_rate = dropout
+
         self.node_encoder = Linear(node_in_dim, hidden_dim)
         self.edge_encoder = Linear(edge_in_dim, hidden_dim)
-        self.virtual_node_embedding = torch.nn.Parameter(torch.zeros(1, hidden_dim))
+        
+        self.virtual_node_embedding = torch.nn.Embedding(1, hidden_dim)  # Learnable virtual node embedding
+        torch.nn.init.constant_(self.virtual_node_embedding.weight, 0)  # Initialize virtual node embedding to zero
 
-        self.vn_mlp1 = Sequential(Linear(hidden_dim, hidden_dim), ReLU(), Linear(hidden_dim, hidden_dim))
-        self.vn_mlp2 = Sequential(Linear(hidden_dim, hidden_dim), ReLU(), Linear(hidden_dim, hidden_dim))
-        self.vn_mlp3 = Sequential(Linear(hidden_dim, hidden_dim), ReLU(), Linear(hidden_dim, hidden_dim))
+        self.convs = torch.nn.ModuleList()
+        self.batch_norms = torch.nn.ModuleList()
+        self.vn_mlp = torch.nn.ModuleList()
 
-        mlp1 = Sequential(Linear(hidden_dim, hidden_dim), ReLU(), Linear(hidden_dim, hidden_dim))
-        self.conv1 = GINEConv(mlp1)
-        self.bn1 = BatchNorm1d(hidden_dim)
+        for _ in range(num_layer):
+            mlp = Sequential(
+                Linear(hidden_dim, hidden_dim),
+                ReLU(),
+                Linear(hidden_dim, hidden_dim),
+                ReLU(),
+                Dropout(dropout)
+            )
+            self.convs.append(GINEConv(mlp))
+            self.batch_norms.append(BatchNorm1d(hidden_dim))
 
-        mlp2 = Sequential(Linear(hidden_dim, hidden_dim), ReLU(), Linear(hidden_dim, hidden_dim))
-        self.conv2 = GINEConv(mlp2)
-        self.bn2 = BatchNorm1d(hidden_dim)
+            self.vn_mlp.append(Sequential(
+                Linear(hidden_dim, hidden_dim),
+                ReLU(),
+                Linear(hidden_dim, hidden_dim),
+                ReLU(),
+                Dropout(dropout)
+            ))
 
-        mlp3 = Sequential(Linear(hidden_dim, hidden_dim), ReLU(), Linear(hidden_dim, hidden_dim))
-        self.conv3 = GINEConv(mlp3)
-        self.bn3 = BatchNorm1d(hidden_dim)
-
-        self.dropout = Dropout(dropout)
-        self.fc_out = Linear(hidden_dim, output_dim)
+        
+        self.prediction_head = Sequential(
+            Linear(hidden_dim, hidden_dim),
+            ReLU(),
+            Dropout(dropout),
+            Linear(hidden_dim, output_dim)
+        )
 
     def forward(self, data: torch_geometric.data.Data):
         """
 
-        :param data:
+        :param data: torch_geometric.data.Data object containing the graph data, including node features, edge indices, edge attributes, and batch information.:
         :return:
         """
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
 
-        x = self.node_encoder(x)
-        edge_attr = self.edge_encoder(edge_attr)
+        h_list = [self.node_encoder(x)]
+        edge_embeddings = self.edge_encoder(edge_attr)
 
-        virtual_node_feat = self.virtual_node_embedding.expand(batch.max().item() + 1, -1)
+        virtual_node_feat = self.virtual_node_embedding.weight.expand(batch.max().item() + 1, -1)
 
-        x = x + virtual_node_feat[batch]
+        for layer in range(self.num_layer):
+            h = h_list[layer] + virtual_node_feat[batch]
+            h = self.convs[layer](h, edge_index, edge_embeddings)
+            h = self.batch_norms[layer](h)
+            h = F.relu(h)
+            h_list.append(h)
 
-        x = self.conv1(x, edge_index, edge_attr)
-        x = self.bn1(x)
-        x = F.relu(x)
+            if layer < self.num_layer - 1:
+                virtual_node_feat = virtual_node_feat + global_add_pool(h, batch)
+                virtual_node_feat = self.vn_mlp[layer](virtual_node_feat)
+            
+        h_graph = global_add_pool(h_list[-1], batch)
 
-        virtual_node_feat = virtual_node_feat + global_add_pool(x, batch)
-        virtual_node_feat = self.vn_mlp1(virtual_node_feat)
-
-        x = x + virtual_node_feat[batch]
-        x = self.conv2(x, edge_index, edge_attr)
-        x = self.bn2(x)
-        x = F.relu(x)
-
-        virtual_node_feat = virtual_node_feat + global_add_pool(x, batch)
-        virtual_node_feat = self.vn_mlp2(virtual_node_feat)
-
-        x = x + virtual_node_feat[batch]
-        x = self.conv3(x, edge_index, edge_attr)
-        x = self.bn3(x)
-        x = F.relu(x)
-
-        x = global_add_pool(x, batch)
-
-        x = self.dropout(x)
-        return self.fc_out(x)
+        return self.prediction_head(h_graph)

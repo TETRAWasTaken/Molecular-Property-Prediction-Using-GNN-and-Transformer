@@ -1,6 +1,9 @@
+torch
 torch-geometric
 scipy
 pandas
 matplotlib
 numpy
 networkx
+rdkit
+scikit-learn
