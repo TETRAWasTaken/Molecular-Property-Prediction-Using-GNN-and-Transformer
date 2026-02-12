@@ -31,7 +31,7 @@ class TrainingTesting(GIN):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate, weight_decay=weight_decay)
         self.criterion = torch.nn.SmoothL1Loss(reduction='none') # Per-element loss for masking
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=10, verbose=True
+            self.optimizer, mode='min', factor=0.5, patience=10
         )
         
         # 4. Normalizer State (Will be fitted later)
