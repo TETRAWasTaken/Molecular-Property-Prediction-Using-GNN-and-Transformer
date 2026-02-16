@@ -29,18 +29,20 @@ class TrainingTesting(GIN):
         
         # 3. Optimization Components
         self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        self.criterion = torch.nn.SmoothL1Loss(reduction='none') # Per-element loss for masking
+        self.criterion = torch.nn.SmoothL1Loss(reduction='none')
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=10
         )
-        
+
         # 4. Normalizer State (Will be fitted later)
         self.register_buffer("mean_y", torch.zeros(output_dim))
         self.register_buffer("std_y", torch.ones(output_dim))
         self.is_fitted = False
 
     def fit_normalizer(self, loader: DataLoader):
-        """Calculates Mean/Std of targets from training data for Z-score normalization."""
+        """
+        Calculates Mean/Std of targets from training data for Z-score normalization.
+        """
         all_y = []
         print("Computing dataset statistics for normalization...")
         for batch in loader:

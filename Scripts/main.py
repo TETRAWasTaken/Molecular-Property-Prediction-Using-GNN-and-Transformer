@@ -4,6 +4,7 @@ from preprocessing import MolecularPropertyPipeline
 from TrainingTesting import TrainingTesting
 import argparse
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--qm8_path", type=str, default=None, help="Path to qm8.csv")
@@ -13,13 +14,14 @@ def main():
 
     args = parser.parse_args()
 
+    # Critical Environment Checks
     if args.check_device:
         print("GPU") if torch.backends.mps.is_available() else print("CPU")
         return
 
     # Define base directory
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
+
     qm8_path = args.qm8_path if args.qm8_path else os.path.join(base_dir, "Dataset", "qm8.csv")
     qm9_path = args.qm9_path if args.qm9_path else os.path.join(base_dir, "Dataset", "qm9.csv")
 
@@ -40,7 +42,7 @@ def main():
 
     # Infer feature dimensions from data
     sample_batch = next(iter(train_loader))
-    node_in_dim = sample_batch.num_node_features   # 6
+    node_in_dim = sample_batch.num_node_features  # 6
     edge_in_dim = sample_batch.edge_attr.shape[1]  # 3
 
     # ==================== 2. Model ====================
@@ -66,18 +68,19 @@ def main():
 
     # ==================== 4. Evaluation ====================
     test_metrics = model.evaluate(test_loader)
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Test Results  —  MAE: {test_metrics['mae']:.4f}  |  R²: {test_metrics['r2']:.4f}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # ==================== 5. Save Model ====================
     save_path = args.save_path if args.save_path else os.path.join("./outputs", "gnn_molecular_model.pth")
-    
+
     # Create outputs directory if it doesn't exist
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    
+
     torch.save(model.state_dict(), save_path)
     print(f"Model saved to {save_path}")
+
 
 if __name__ == "__main__":
     main()
