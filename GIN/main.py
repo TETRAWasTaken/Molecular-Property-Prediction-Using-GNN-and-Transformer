@@ -1,7 +1,8 @@
 import os
 import torch
-from preprocessing import MolecularPropertyPipeline
-from TrainingTesting import TrainingTesting
+from GIN.Utils.preprocessing import MolecularPropertyPipeline
+from GIN.Utils.TrainingTesting import TrainingTesting
+from GIN.Utils.paths import Paths
 import argparse
 
 
@@ -19,11 +20,12 @@ def main():
         print("GPU") if torch.backends.mps.is_available() else print("CPU")
         return
 
-    # Define base directory
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Initialize Paths
+    paths = Paths()
 
-    qm8_path = args.qm8_path if args.qm8_path else os.path.join(base_dir, "Dataset", "qm8.csv")
-    qm9_path = args.qm9_path if args.qm9_path else os.path.join(base_dir, "Dataset", "qm9.csv")
+    qm8_path = args.qm8_path if args.qm8_path else paths.get_qm8_path()
+    qm9_path = args.qm9_path if args.qm9_path else paths.get_qm9_path()
+    save_path = args.save_path if args.save_path else paths.get_model_path()
 
     # ==================== Hyperparameters ====================
     BATCH_SIZE = 64
@@ -73,8 +75,6 @@ def main():
     print(f"{'=' * 60}")
 
     # ==================== 5. Save Model ====================
-    save_path = args.save_path if args.save_path else os.path.join("./outputs", "gnn_molecular_model.pth")
-
     # Create outputs directory if it doesn't exist
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 

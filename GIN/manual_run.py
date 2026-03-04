@@ -1,7 +1,7 @@
 import os
 import torch
-from preprocessing import MolecularPropertyPipeline
-from TrainingTesting import TrainingTesting
+from GIN.Utils.GIN import MolecularPropertyPipeline
+from GIN.Utils.GIN import TrainingTesting
 from art import *
 
 

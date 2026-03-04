@@ -1,11 +1,12 @@
 import torch
 import pandas as pd
-import os
 import random
+import os
 from rdkit import Chem
 from torch_geometric.data import Data
-from TrainingTesting import TrainingTesting
-from preprocessing import MolecularPropertyPipeline
+from GIN.Utils.TrainingTesting import TrainingTesting
+from GIN.Utils.preprocessing import MolecularPropertyPipeline
+from GIN.Utils.paths import Paths
 
 def smiles_to_graph(smiles: str):
     """
@@ -63,12 +64,12 @@ def smiles_to_graph(smiles: str):
 def main():
     # ==================== Configuration ====================
     NUM_SAMPLES = 5
-    MODEL_PATH = "./outputs/gnn_molecular_model.pth"
     
-    # Define base directory to locate datasets
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    qm8_path = os.path.join(base_dir, "Dataset", "qm8.csv")
-    qm9_path = os.path.join(base_dir, "Dataset", "qm9.csv")
+    # Initialize Paths
+    paths = Paths()
+    qm8_path = paths.get_qm8_path()
+    qm9_path = paths.get_qm9_path()
+    MODEL_PATH = paths.get_model_path()
 
     # ==================== 1. Load Data ====================
     print(f"Loading datasets from:\n - {qm8_path}\n - {qm9_path}")
