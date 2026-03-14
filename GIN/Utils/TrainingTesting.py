@@ -3,7 +3,8 @@ import copy
 from typing import Dict
 from torch_geometric.loader import DataLoader
 from sklearn.metrics import mean_absolute_error, r2_score
-from GIN import GIN 
+from GIN.Utils.GIN import GIN
+
 
 class TrainingTesting(GIN):
     """
@@ -18,26 +19,26 @@ class TrainingTesting(GIN):
                  dropout: float = 0.2,
                  learning_rate: float = 0.001,
                  weight_decay: float = 5e-4,
-                 device: str = "cuda"):
+                 device: str = "mps"):
         
         # 1. Initialize the GIN Architecture (Superclass)
         super().__init__(node_in_dim, edge_in_dim, hidden_dim, output_dim, num_layer=3, dropout=dropout)
         
-        # 2. Setup Device
-        self.device_name = device if torch.cuda.is_available() else "cpu"
-        self.to(self.device_name)
-        
-        # 3. Optimization Components
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        self.criterion = torch.nn.SmoothL1Loss(reduction='none') # Per-element loss for masking
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=10, verbose=True
-        )
-        
-        # 4. Normalizer State (Will be fitted later)
+        # 2. Normalizer State (Registered before moving to device)
         self.register_buffer("mean_y", torch.zeros(output_dim))
         self.register_buffer("std_y", torch.ones(output_dim))
         self.is_fitted = False
+        
+        # 3. Setup Device
+        self.device_name = device
+        self.to(self.device_name)
+        
+        # 4. Optimization Components
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        self.criterion = torch.nn.SmoothL1Loss(reduction='none') # Per-element loss for masking
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', factor=0.5, patience=10
+        )
 
     def fit_normalizer(self, loader: DataLoader):
         """Calculates Mean/Std of targets from training data for Z-score normalization."""
