@@ -1,7 +1,6 @@
 from typing import Dict
 
 import torch
-from torch_geometric.data import InMemoryDataset
 from transformers import AutoTokenizer
 
 class Tokeniser:
@@ -47,7 +46,7 @@ class Tokeniser:
             padding='max_length',
             truncation=True,
             return_tensors='pt'
-        )
+        ) 
 
         return {
             "input_ids": encoded["input_ids"].squeeze(0),
