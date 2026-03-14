@@ -1,0 +1,78 @@
+import os
+import torch
+from preprocessing import MolecularPropertyPipeline
+from TrainingTesting import TrainingTesting
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--qm8_path", type=str, default=None, help="Path to qm8.csv")
+    parser.add_argument("--qm9_path", type=str, default=None, help="Path to qm9.csv")
+    parser.add_argument("--save_path", type=str, default=None, help="Path to save the trained model")
+    
+    args = parser.parse_args()
+
+    # Define base directory
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    qm8_path = args.qm8_path if args.qm8_path else os.path.join(base_dir, "Dataset", "qm8.csv")
+    qm9_path = args.qm9_path if args.qm9_path else os.path.join(base_dir, "Dataset", "qm9.csv")
+
+    # ==================== Hyperparameters ====================
+    BATCH_SIZE = 64
+    HIDDEN_DIM = 128
+    OUTPUT_DIM = 12       # 4 QM8 + 8 QM9 targets
+    DROPOUT = 0.2
+    LEARNING_RATE = 0.001
+    WEIGHT_DECAY = 5e-4
+    EPOCHS = 50
+    PATIENCE = 20
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # ==================== 1. Preprocessing ====================
+    pipeline = MolecularPropertyPipeline(qm8_path, qm9_path)
+    train_loader, val_loader, test_loader = pipeline.run_full_pipeline(batch_size=BATCH_SIZE)
+
+    # Infer feature dimensions from data
+    sample_batch = next(iter(train_loader))
+    node_in_dim = sample_batch.num_node_features   # 6
+    edge_in_dim = sample_batch.edge_attr.shape[1]  # 3
+
+    # ==================== 2. Model ====================
+    model = TrainingTesting(
+        node_in_dim=node_in_dim,
+        edge_in_dim=edge_in_dim,
+        hidden_dim=HIDDEN_DIM,
+        output_dim=OUTPUT_DIM,
+        dropout=DROPOUT,
+        learning_rate=LEARNING_RATE,
+        weight_decay=WEIGHT_DECAY,
+        device=DEVICE
+    )
+    print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # ==================== 3. Training ====================
+    model.run_training(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=EPOCHS,
+        patience=PATIENCE
+    )
+
+    # ==================== 4. Evaluation ====================
+    test_metrics = model.evaluate(test_loader)
+    print(f"\n{'='*60}")
+    print(f"Test Results  —  MAE: {test_metrics['mae']:.4f}  |  R²: {test_metrics['r2']:.4f}")
+    print(f"{'='*60}")
+
+    # ==================== 5. Save Model ====================
+    save_path = args.save_path if args.save_path else os.path.join("./outputs", "gnn_molecular_model.pth")
+    
+    # Create outputs directory if it doesn't exist
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    torch.save(model.state_dict(), save_path)
+    print(f"Model saved to {save_path}")
+
+if __name__ == "__main__":
+    main()
