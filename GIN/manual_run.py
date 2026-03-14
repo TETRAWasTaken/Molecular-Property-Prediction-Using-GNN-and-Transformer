@@ -1,24 +1,47 @@
+import argparse
 import os
+import sys
+
 import torch
-from GIN.Utils.GIN import MolecularPropertyPipeline
-from GIN.Utils.GIN import TrainingTesting
 from art import *
 
-# TODO: store the graph outputs in a persistent storage for future use
-# TODO: check the persistent storage before running the preprocessing all over again, to check for graph data
-# TODO: create argument flag to handle storage system
-# TODO: clean up the verbose a little bit, add progress bars
+# Support both `python GIN/manual_run.py` and `python -m GIN.manual_run`.
+if __package__ in (None, ""):
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+from GIN.Utils.paths import Paths
+from GIN.Utils.preprocessing import MolecularPropertyPipeline
+from GIN.Utils.TrainingTesting import TrainingTesting
 
 
 class main:
     """
     main class to manually run the molecular property prediction pipeline.
     """
-    def __init__(self, qm8_path: str, qm9_path: str):
+    def __init__(
+        self,
+        qm8_path: str,
+        qm9_path: str,
+        use_cache: bool = True,
+        force_rebuild: bool = False,
+        cache_path: str = None,
+        save_path: str = None,
+        verbose: bool = True,
+        show_progress: bool = True,
+    ):
         self.model = None
         self.qm8_path = qm8_path
         self.qm9_path = qm9_path
-        
+
+        self.use_cache = use_cache
+        self.force_rebuild = force_rebuild
+        self.cache_path = cache_path
+        self.save_path = save_path or Paths().get_model_path()
+        self.verbose = verbose
+        self.show_progress = show_progress
+
         self.BATCH_SIZE = 64
         self.HIDDEN_DIM = 128
         self.OUTPUT_DIM = 12
@@ -27,20 +50,42 @@ class main:
         self.WEIGHT_DECAY = 5e-4
         self.EPOCHS = 25
         self.PATIENCE = 20
-        self.DEVICE = torch.device("cpu") if torch.backends.mps.is_available() else "cpu"
+        self.DEVICE = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+
+    def _read_choice(self, prompt: str, valid_choices: tuple[str, ...]) -> str:
+        """Small helper to keep interactive command handling consistent."""
+        while True:
+            print(prompt)
+            choice = input().strip().lower()
+            if choice in valid_choices:
+                return choice
+            print("Invalid input")
 
     def preprocess(self):
-        """Runs the preprocessing pipeline and returns data loaders."""
+        """Runs preprocessing with optional persistent cache and returns data loaders."""
         pipeline = MolecularPropertyPipeline(self.qm8_path, self.qm9_path)
-        self.train_loader, self.val_loader, self.test_loader = pipeline.run_full_pipeline(batch_size=self.BATCH_SIZE)
-        
-        # Infer feature dimensions
+        effective_cache_path = self.cache_path or pipeline._default_cache_path()
+
+        if self.use_cache:
+            cache_status = "found" if os.path.exists(effective_cache_path) else "not found"
+            print(f"Cache {cache_status}: {effective_cache_path}")
+        else:
+            print("Cache disabled for this run.")
+
+        self.train_loader, self.val_loader, self.test_loader = pipeline.run_full_pipeline(
+            batch_size=self.BATCH_SIZE,
+            use_cache=self.use_cache,
+            force_rebuild=self.force_rebuild,
+            cache_path=self.cache_path,
+            verbose=self.verbose,
+            show_progress=self.show_progress,
+        )
+
         sample_batch = next(iter(self.train_loader))
         self.node_in_dim = sample_batch.num_node_features
         self.edge_in_dim = sample_batch.edge_attr.shape[1]
-        
         tprint("Preprocessing Completed")
-        
+
     def build_model(self):
         """Initializes the TrainingTesting model."""
         self.model = TrainingTesting(
@@ -59,34 +104,24 @@ class main:
         """Executes the full training and evaluation process."""
         tprint("Molecular Property Prediction", font='block-medium')
         tprint("GIN Training Pipeline", font='block-medium')
-        
-        while True:
-            print("To perform data-preprocessing, Enter 'S'")
-            command = input()
-        
-            if command.lower() == 's':
-                self.preprocess()
-                break
-        
-            else:
-                print("Inavlid Input")
-                continue
-        
+
+        cmd = self._read_choice("To perform data-preprocessing, enter 'S'", ("s",))
+        if cmd == "s":
+            self.preprocess()
+
         print("Building Model Configuration")
         self.build_model()
-        
+
         while True:
-            print("To perform Training, Enter 'S'")
-            print("To check training device, enter 'D'")
-            command = input().lower()
-            
-            if command == 's':
-                break
-            elif command == 'd':
+            cmd = self._read_choice(
+                "To perform training, enter 'S' | To check training device, enter 'D'",
+                ("s", "d"),
+            )
+            if cmd == "d":
                 print(f"Current Device: {self.DEVICE}")
-            else:
-                print("Invalid Input")
-        
+                continue
+            break
+
         # Training
         self.model.run_training(
             train_loader=self.train_loader,
@@ -94,7 +129,7 @@ class main:
             epochs=self.EPOCHS,
             patience=self.PATIENCE
         )
-        
+
         # Evaluation
         test_metrics = self.model.evaluate(self.test_loader)
         print(f"\n{'=' * 60}")
@@ -104,22 +139,42 @@ class main:
         # Save
         self.save_model()
 
-    def save_model(self, save_path: str = "./outputs/gnn_molecular_model.pth"):
+    def save_model(self, save_path: str = None):
         """Saves the trained model state to a file."""
         if self.model is None:
             print("No model to save.")
             return
 
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        torch.save(self.model.state_dict(), save_path)
-        print(f"Model saved to {save_path}")
+        target_path = save_path or self.save_path
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        torch.save(self.model.state_dict(), target_path)
+        print(f"Model saved to {target_path}")
 
 
 if __name__ == "__main__":
-    # Example paths - adjusted to likely structure based on context
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    qm8 = os.path.join(base_dir, "Dataset", "qm8.csv")
-    qm9 = os.path.join(base_dir, "Dataset", "qm9.csv")
-    
-    runner = main(qm8, qm9)
+    parser = argparse.ArgumentParser(description="Manual GIN training runner")
+    parser.add_argument("--qm8_path", type=str, default=None, help="Path to qm8.csv")
+    parser.add_argument("--qm9_path", type=str, default=None, help="Path to qm9.csv")
+    parser.add_argument("--cache_path", type=str, default=None, help="Optional custom cache file path")
+    parser.add_argument("--save_path", type=str, default=None, help="Optional custom model save path")
+    parser.add_argument("--no_cache", action="store_true", help="Disable persistent preprocessing cache")
+    parser.add_argument("--force_rebuild", action="store_true", help="Ignore cache and rebuild preprocessing")
+    parser.add_argument("--quiet", action="store_true", help="Reduce preprocessing verbosity")
+    parser.add_argument("--no_progress", action="store_true", help="Disable preprocessing progress bar")
+    args = parser.parse_args()
+
+    paths = Paths()
+    qm8 = args.qm8_path or paths.get_qm8_path()
+    qm9 = args.qm9_path or paths.get_qm9_path()
+
+    runner = main(
+        qm8,
+        qm9,
+        use_cache=not args.no_cache,
+        force_rebuild=args.force_rebuild,
+        cache_path=args.cache_path,
+        save_path=args.save_path,
+        verbose=not args.quiet,
+        show_progress=not args.no_progress,
+    )
     runner.run()
