@@ -7,6 +7,8 @@ from torch_geometric.data import Data
 from GIN.Utils.TrainingTesting import TrainingTesting
 from GIN.Utils.preprocessing import MolecularPropertyPipeline
 
+# TODO: use the new dataset with unseen data to predict and get model metrics
+
 def smiles_to_graph(smiles: str):
     """
     Converts a SMILES string to a PyTorch Geometric Data object for inference.

@@ -1,5 +1,6 @@
 from typing import Dict
 
+import pandas as pd
 import torch
 from transformers import AutoTokenizer
 
@@ -17,15 +18,15 @@ class Tokeniser:
     :type model_name: str
     :ivar max_length: The maximum length of a tokenized sequence.
     :type max_length: int
-    :ivar tokeniser: The actual tokenization component or object. Handles
-        the conversion of input text to tokenized outputs based on the
-        specific model indicated by `model_name`.
-    :type tokeniser: Any
+    
     """
-    def __init__(self, model_name: str = "DeepChem/ChemBERTa-77M-MTR",
+    def __init__(self, qm8_path: str, qm9_path: str,
+                 model_name: str = "DeepChem/ChemBERTa-77M-MTR",
                  max_length: int = 128):
         self.tokeniser = AutoTokenizer.from_pretrained(model_name)
         self.max_length = max_length
+        self.df8 = pd.read_csv(qm8_path)
+        self.df9 = pd.read_csv(qm9_path)
 
     def encode(self, smiles: str) -> Dict[str, torch.Tensor]:
         """
@@ -52,3 +53,10 @@ class Tokeniser:
             "input_ids": encoded["input_ids"].squeeze(0),
             "attention_mask": encoded["attention_mask"].squeeze(0)
         }
+    
+    def run(self, smiles_list: list) -> Dict[str, torch.Tensor]:
+        """
+        Tokenizes a list of SMILES strings.
+        """
+
+        

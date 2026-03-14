@@ -4,6 +4,11 @@ from GIN.Utils.GIN import MolecularPropertyPipeline
 from GIN.Utils.GIN import TrainingTesting
 from art import *
 
+# TODO: store the graph outputs in a persistent storage for future use
+# TODO: check the persistent storage before running the preprocessing all over again, to check for graph data
+# TODO: create argument flag to handle storage system
+# TODO: clean up the verbose a little bit, add progress bars
+
 
 class main:
     """
