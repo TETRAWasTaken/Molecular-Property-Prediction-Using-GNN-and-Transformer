@@ -1,90 +1,49 @@
-import torch
-import pandas as pd
 import os
+import sys
+import torch
 import random
-from rdkit import Chem
-from torch_geometric.data import Data
+
+if __package__ in (None, ""):
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
 from GIN.Utils.TrainingTesting import TrainingTesting
 from GIN.Utils.preprocessing import MolecularPropertyPipeline
+from GIN.Utils.paths import Paths
 
 # TODO: use the new dataset with unseen data to predict and get model metrics
-
-def smiles_to_graph(smiles: str):
-    """
-    Converts a SMILES string to a PyTorch Geometric Data object for inference.
-    """
-    mol = Chem.MolFromSmiles(smiles)
-    if not mol:
-        return None
-
-    # --- Node Features (Atoms) ---
-    node_feats = []
-    for atom in mol.GetAtoms():
-        node_feats.append([
-            atom.GetAtomicNum(),           # Atomic number
-            atom.GetDegree(),              # Number of bonds
-            atom.GetFormalCharge(),        # Charge
-            atom.GetTotalNumHs(),          # Number of hydrogens
-            int(atom.GetIsAromatic()),     # Is aromatic?
-            int(atom.GetHybridization())   # Hybridization type
-        ])
-    x = torch.tensor(node_feats, dtype=torch.float)
-
-    # --- Edge Features (Bonds) ---
-    edge_indices = []
-    edge_attrs = []
-
-    for bond in mol.GetBonds():
-        i = bond.GetBeginAtomIdx()
-        j = bond.GetEndAtomIdx()
-
-        bond_feats = [
-            float(bond.GetBondTypeAsDouble()),  # Bond type
-            float(bond.GetIsConjugated()),      # Is conjugated?
-            float(bond.GetIsAromatic())         # Is aromatic?
-        ]
-
-        # Add bidirectional edges
-        edge_indices.append([i, j])
-        edge_attrs.append(bond_feats)
-        edge_indices.append([j, i])
-        edge_attrs.append(bond_feats)
-
-    if len(edge_indices) == 0:
-        edge_index = torch.empty((2, 0), dtype=torch.long)
-        edge_attr = torch.empty((0, 3), dtype=torch.float)
-    else:
-        edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
-        edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
-
-    # Create batch index (all zeros for a single graph)
-    batch = torch.zeros(x.size(0), dtype=torch.long)
-
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, batch=batch)
 
 def main():
     # ==================== Configuration ====================
     NUM_SAMPLES = 5
+    BATCH_SIZE = 64
 
-    # Define base directory to locate datasets
-    # Assuming this script is in GIN/Utils/predict.py
-    # We need to go up two levels to reach the project root
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    paths = Paths()
+    qm8_path = paths.get_qm8_path()
+    qm9_path = paths.get_qm9_path()
+    model_path = paths.get_model_path()
 
-    qm8_path = os.path.join(base_dir, "Dataset", "qm8.csv")
-    qm9_path = os.path.join(base_dir, "Dataset", "qm9.csv")
-    MODEL_PATH = os.path.join(base_dir, "GIN", "outputs", "gnn_molecular_model.pth")
-
-    # ==================== 1. Load Data ====================
+    # ==================== 1. Load Cached Preprocessed Data ====================
     print(f"Loading datasets from:\n - {qm8_path}\n - {qm9_path}")
+    print("Running preprocessing pipeline with cache auto-detection...")
 
-    # Use the pipeline class to handle loading and merging logic
+    # run_full_pipeline automatically loads GIN/outputs/cache/preprocessed_graphs.pt when valid.
     pipeline = MolecularPropertyPipeline(qm8_path, qm9_path)
-    pipeline.load_data()
-    pipeline.canonicalize_smiles()
-    df_merged = pipeline.merge_datasets()
+    pipeline.run_full_pipeline(
+        batch_size=BATCH_SIZE,
+        use_cache=True,
+        force_rebuild=False,
+        verbose=True,
+        show_progress=False,
+    )
 
-    print(f"\nTotal molecules available: {len(df_merged)}")
+    total_graphs = len(pipeline.graphs) if pipeline.graphs is not None else 0
+    if total_graphs == 0:
+        print("No preprocessed graphs available for prediction.")
+        return
+
+    print(f"\nTotal cached molecules available: {total_graphs}")
 
     # ==================== 2. Load Model ====================
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -102,12 +61,8 @@ def main():
         device=str(device)
     )
 
-    if not os.path.exists(MODEL_PATH):
-        print(f"Error: Model not found at {MODEL_PATH}. Please train the model first.")
-        return
-
     try:
-        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+        model.load_state_dict(torch.load(model_path, map_location=device))
         print("Model loaded successfully.")
     except Exception as e:
         print(f"Failed to load model: {e}")
@@ -117,24 +72,29 @@ def main():
     model.to(device)
     model.eval()
 
-    # ==================== 3. Predict on Random Samples ====================
-    print(f"\nSelecting {NUM_SAMPLES} random molecules for prediction...\n")
+    # ==================== 3. Predict on Random Cached Test Samples ====================
+    test_indices = (pipeline.split_indices or {}).get("test", list(range(total_graphs)))
+    if not test_indices:
+        test_indices = list(range(total_graphs))
 
-    sample_indices = random.sample(range(len(df_merged)), NUM_SAMPLES)
-    samples = df_merged.iloc[sample_indices]
+    n_samples = min(NUM_SAMPLES, len(test_indices))
+    print(f"\nSelecting {n_samples} random cached molecules for prediction...\n")
 
-    properties = ['E1-CC2', 'E2-CC2', 'f1-CC2', 'f2-CC2',
-                  'mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0']
+    sample_indices = random.sample(test_indices, n_samples)
+    properties = pipeline.target_cols
 
-    for idx, row in samples.iterrows():
-        smiles = row['smiles_new']
+    for graph_idx in sample_indices:
+        graph = pipeline.graphs[graph_idx]
+        smiles = (
+            pipeline.smiles_list[graph_idx]
+            if pipeline.smiles_list is not None and graph_idx < len(pipeline.smiles_list)
+            else f"index_{graph_idx}"
+        )
         print(f"Molecule: {smiles}")
 
-        # Convert to graph
-        graph = smiles_to_graph(smiles)
-        if not graph:
-            print("  Invalid SMILES, skipping.")
-            continue
+        # Ensure a batch vector exists for single-graph inference.
+        if not hasattr(graph, "batch") or graph.batch is None:
+            graph.batch = torch.zeros(graph.x.size(0), dtype=torch.long)
 
         graph = graph.to(device)
 
@@ -152,9 +112,9 @@ def main():
         for i, prop_name in enumerate(properties):
             pred_val = pred_real[0][i].item()
 
-            # Check if actual value exists in dataframe (it might be NaN)
-            actual_val = row.get(prop_name, float('nan'))
-            actual_str = f"{actual_val:.4f}" if pd.notna(actual_val) else "N/A"
+            actual_val = graph.y[0][i].item()
+            is_available = bool(graph.mask[0][i].item())
+            actual_str = f"{actual_val:.4f}" if is_available else "N/A"
 
             print(f"{prop_name:<10} | {pred_val:<15.4f} | {actual_str:<15}")
         print("=" * 50 + "\n")

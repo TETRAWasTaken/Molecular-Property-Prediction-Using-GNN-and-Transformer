@@ -1,42 +1,60 @@
 import os
+import sys
 import torch
+
+if __package__ in (None, ""):
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
 from GIN.Utils.preprocessing import MolecularPropertyPipeline
 from GIN.Utils.TrainingTesting import TrainingTesting
 from GIN.Utils.paths import Paths
 import argparse
 
+IS_SAGEMAKER = "SM_MODEL_DIR" in os.environ
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--qm8_path", type=str, default=None, help="Path to qm8.csv")
-    parser.add_argument("--qm9_path", type=str, default=None, help="Path to qm9.csv")
-    parser.add_argument("--save_path", type=str, default=None, help="Path to save the trained model")
-    parser.add_argument("--check_device", type=bool, default=False, help="Check if GPU is available")
+    parser.add_argument("--qm8_path", type=str, default=None)
+    parser.add_argument("--qm9_path", type=str, default=None)
+    parser.add_argument("--save_path", type=str, default=None)
+    parser.add_argument("--check_device", type=bool, default=False)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--hidden_dim", type=int, default=128)
+    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--learning_rate", type=float, default=0.001)
 
     args = parser.parse_args()
 
     # Critical Environment Checks
     if args.check_device:
-        print("GPU") if torch.backends.mps.is_available() else print("CPU")
+        print("GPU") if torch.cuda.is_available() else print("CPU")
         return
 
-    # Initialize Paths
-    paths = Paths()
-
-    qm8_path = args.qm8_path if args.qm8_path else paths.get_qm8_path()
-    qm9_path = args.qm9_path if args.qm9_path else paths.get_qm9_path()
-    save_path = args.save_path if args.save_path else paths.get_model_path()
+    # Resolve paths: SageMaker env vars take priority, then CLI args, then local defaults
+    if IS_SAGEMAKER:
+        data_dir = os.environ["SM_CHANNEL_TRAINING"]
+        qm8_path = args.qm8_path or os.path.join(data_dir, "qm8.csv")
+        qm9_path = args.qm9_path or os.path.join(data_dir, "qm9.csv")
+        save_path = args.save_path or os.path.join(os.environ["SM_MODEL_DIR"], "gnn_molecular_model.pth")
+    else:
+        paths = Paths()
+        qm8_path = args.qm8_path or paths.get_qm8_path()
+        qm9_path = args.qm9_path or paths.get_qm9_path()
+        save_path = args.save_path or paths.get_model_path()
 
     # ==================== Hyperparameters ====================
-    BATCH_SIZE = 64
-    HIDDEN_DIM = 128
+    BATCH_SIZE = args.batch_size
+    HIDDEN_DIM = args.hidden_dim
     OUTPUT_DIM = 12
     DROPOUT = 0.2
-    LEARNING_RATE = 0.001
+    LEARNING_RATE = args.learning_rate
     WEIGHT_DECAY = 5e-4
-    EPOCHS = 25
+    EPOCHS = args.epochs
     PATIENCE = 20
-    DEVICE = torch.device("cuda") if torch.backends.mps.is_available() else "cpu"
+    DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     # ==================== 1. Preprocessing ====================
     pipeline = MolecularPropertyPipeline(qm8_path, qm9_path)
