@@ -6,7 +6,6 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 import networkx as nx
 import matplotlib.pyplot as plt
-
 from multiprocessing import Pool, cpu_count
 
 
@@ -121,19 +120,24 @@ class MolecularPropertyPipeline:
         except Exception:
             return None
 
-    def canonicalize_smiles(self, verbose: bool = True, n_jobs: int = -1):
+    def canonicalize_smiles(
+        self,
+        verbose: bool = True,
+        n_jobs: int = -1,
+    ):
         """Canonicalize SMILES in both datasets."""
         if verbose:
             print("\nCanonicalizing SMILES strings...")
+
+        smiles8 = self.df8['smiles'].tolist()
+        smiles9 = self.df9['smiles'].tolist()
+
         num_cores = cpu_count() if n_jobs == -1 else n_jobs
         with Pool(num_cores) as pool:
             if verbose:
                 print(f"Using {num_cores} cores for canonicalization.")
 
-            smiles8 = self.df8['smiles'].tolist()
             self.df8['smiles'] = pool.map(self._canonicalize, smiles8)
-
-            smiles9 = self.df9['smiles'].tolist()
             self.df9['smiles'] = pool.map(self._canonicalize, smiles9)
 
         # Remove rows with invalid SMILES
@@ -260,13 +264,18 @@ class MolecularPropertyPipeline:
 
         return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, mask=mask)
 
-    def generate_graphs(self, verbose: bool = True, show_progress: bool = True, n_jobs: int = -1):
+    def generate_graphs(
+        self,
+        verbose: bool = True,
+        show_progress: bool = True,
+        n_jobs: int = -1,
+    ):
         """Generate graph representations for all molecules."""
         if verbose:
             print("\nGenerating molecular graphs...")
 
-        num_cores = cpu_count() if n_jobs == -1 else n_jobs
         num_molecules = len(self.df_merged)
+        num_cores = cpu_count() if n_jobs == -1 else n_jobs
 
         smiles_list_full = self.df_merged['smiles'].tolist()
         args_list = [
@@ -283,7 +292,6 @@ class MolecularPropertyPipeline:
                 for i, result in enumerate(pool.imap(self._smiles_to_graph, args_list)):
                     results.append(result)
                     self._print_progress(i + 1, num_molecules)
-
             else:
                 results = pool.map(self._smiles_to_graph, args_list)
 
@@ -468,11 +476,18 @@ class MolecularPropertyPipeline:
 
         self.load_data(verbose=verbose)
         self.validate_data(verbose=verbose)
-        self.canonicalize_smiles(verbose=verbose, n_jobs=n_jobs)
+        self.canonicalize_smiles(
+            verbose=verbose,
+            n_jobs=n_jobs,
+        )
         self.merge_datasets(verbose=verbose)
         self.create_targets_and_masks(verbose=verbose)
         self.get_tensors(verbose=verbose)
-        self.generate_graphs(verbose=verbose, show_progress=show_progress, n_jobs=n_jobs)
+        self.generate_graphs(
+            verbose=verbose,
+            show_progress=show_progress,
+            n_jobs=n_jobs,
+        )
 
         self._build_split_indices(len(self.graphs), train_ratio=0.8, val_ratio=0.1)
         if use_cache:

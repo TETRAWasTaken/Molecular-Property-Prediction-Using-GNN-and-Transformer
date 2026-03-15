@@ -50,7 +50,7 @@ class main:
         self.WEIGHT_DECAY = 5e-4
         self.EPOCHS = 25
         self.PATIENCE = 20
-        self.DEVICE = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+        self.DEVICE = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     def _read_choice(self, prompt: str, valid_choices: tuple[str, ...]) -> str:
         """Small helper to keep interactive command handling consistent."""
