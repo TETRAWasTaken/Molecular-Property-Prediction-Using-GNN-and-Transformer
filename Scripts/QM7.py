@@ -7,8 +7,15 @@ class QM7_Preprocessing:
         self.data = sio.loadmat('../Dataset/qm7.mat')
 
     def Extract_Data(self):
+<<<<<<< HEAD
         self.Q: pd.DataFrame = pd.DataFrame(self.data['Z'])
         self.AET: pd.DataFrame = pd.DataFrame(self.data['T'])
+=======
+        self.CM = self.data.get('X', [])  # Coulomb Matrix
+        self.Q = pd.DataFrame(self.data['Z'])  # Nuclear Charge
+        self.COOR = self.data.get('R', [])  # Coordinates
+        self.AET = pd.DataFrame(self.data['T'])  # Atomization Energies
+>>>>>>> 53239188f3ceb851238f91017930aaa70efb41ae
         print("Extracted Features from the Dataset")
 
     def Compile_Data(self):

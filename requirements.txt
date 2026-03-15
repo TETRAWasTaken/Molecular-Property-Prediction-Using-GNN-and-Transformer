@@ -1,6 +1,16 @@
+<<<<<<< HEAD
+=======
+torch
+>>>>>>> 53239188f3ceb851238f91017930aaa70efb41ae
 torch-geometric
 scipy
 pandas
 matplotlib
 numpy
+<<<<<<< HEAD
 networkx
+=======
+networkx
+rdkit
+scikit-learn
+>>>>>>> 53239188f3ceb851238f91017930aaa70efb41ae
