@@ -10,6 +10,16 @@ import matplotlib.pyplot as plt
 from multiprocessing import Pool, cpu_count
 
 
+def _looks_like_git_lfs_pointer(file_path: str) -> bool:
+    """Detect whether a file contains a Git LFS pointer instead of real data."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as handle:
+            first_line = handle.readline().strip()
+        return first_line == "version https://git-lfs.github.com/spec/v1"
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 class MolecularPropertyPipeline:
     '''
     Comprehensive class for the entire molecular property prediction pipeline.
@@ -52,12 +62,38 @@ class MolecularPropertyPipeline:
         """Load QM8 and QM9 CSV files."""
         if verbose:
             print("Loading QM8 and QM9 datasets...")
+
+        for dataset_name, dataset_path in (("QM8", self.qm8_path), ("QM9", self.qm9_path)):
+            if _looks_like_git_lfs_pointer(dataset_path):
+                raise RuntimeError(
+                    f"{dataset_name} dataset at '{dataset_path}' is a Git LFS pointer, not the actual CSV data. "
+                    "This usually means the repository was cloned or copied without fetching Git LFS assets. "
+                    "On the target machine, install Git LFS and run 'git lfs pull', or replace the file with the real dataset before running preprocessing."
+                )
+
         self.df8 = pd.read_csv(self.qm8_path)
         self.df9 = pd.read_csv(self.qm9_path)
+
+        self._validate_expected_columns(self.df8, "QM8", self.qm8_path)
+        self._validate_expected_columns(self.df9, "QM9", self.qm9_path)
+
         if verbose:
             print(f"QM8 shape: {self.df8.shape}")
             print(f"QM9 shape: {self.df9.shape}")
         return self.df8, self.df9
+
+    @staticmethod
+    def _validate_expected_columns(df: pd.DataFrame, dataset_name: str, dataset_path: str):
+        """Fail fast with an actionable message when required dataset columns are missing."""
+        required_columns = {"smiles"}
+        missing_columns = sorted(required_columns - set(df.columns))
+        if missing_columns:
+            preview_columns = ", ".join(map(str, df.columns[:5])) or "<no columns>"
+            raise ValueError(
+                f"{dataset_name} dataset at '{dataset_path}' is missing required columns: {missing_columns}. "
+                f"Found columns: {preview_columns}. "
+                "If this file came from a Git clone, verify Git LFS assets were downloaded with 'git lfs pull'."
+            )
 
     def validate_data(self, verbose: bool = True):
         """Check for missing values and data quality issues."""
