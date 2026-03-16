@@ -277,14 +277,16 @@ class MolecularPropertyPipeline:
         if verbose:
             print(f"Using {num_cores} cores for graph generation on {num_molecules} molecules")
 
+        optimal_chunksize = max(1, len(args_list) // (num_cores * 4))
+
         with Pool(num_cores) as pool:
             if show_progress:
                 results = []
-                for i, result in enumerate(pool.imap(self._smiles_to_graph, args_list)):
+                for i, result in enumerate(pool.imap(MolecularPropertyPipeline._smiles_to_graph, args_list, chunksize=optimal_chunksize)):
                     results.append(result)
                     self._print_progress(i + 1, num_molecules)
             else:
-                results = pool.map(self._smiles_to_graph, args_list)
+                results = pool.map(MolecularPropertyPipeline._smiles_to_graph, args_list, chunksize=optimal_chunksize)
 
         self.graphs = []
         self.smiles_list = []

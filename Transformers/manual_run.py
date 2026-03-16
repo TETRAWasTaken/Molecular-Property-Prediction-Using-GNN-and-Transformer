@@ -5,6 +5,8 @@ from typing import Dict
 
 import pandas as pd
 import torch
+import torch
+torch.multiprocessing.set_sharing_strategy('file_system')
 from art import tprint
 from torch.utils.data import DataLoader, Dataset
 
