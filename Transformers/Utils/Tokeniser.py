@@ -15,7 +15,7 @@ def _tokenize_smiles_chunk(args: Tuple[List[str], str, int]) -> Dict[str, torch.
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     encodings = tokenizer(
         smiles_chunk,
-        padding=True,
+        padding='max_length',
         truncation=True,
         max_length=max_length,
         return_tensors='pt'
@@ -198,8 +198,7 @@ class Tokeniser:
 
     def batch_encode(self, smiles_list: List[str], max_length: Optional[int] = None) -> Dict[str, torch.Tensor]:
         """
-        Notebook-style batch tokenization:
-        tokenizer(smiles_list, padding=True, truncation=True, max_length=64, return_tensors='pt')
+        Batch tokenization with deterministic tensor width across all calls.
         """
         if not smiles_list:
             raise ValueError("smiles_list is empty. Provide at least one SMILES string.")
@@ -208,7 +207,7 @@ class Tokeniser:
 
         encodings = self.tokeniser(
             smiles_list,
-            padding=True,
+            padding='max_length',
             truncation=True,
             max_length=effective_max_length,
             return_tensors='pt'
