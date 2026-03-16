@@ -74,7 +74,7 @@ class FineTuning(StandaloneChemBERTa):
             self.eval()
             total_val_loss = 0.0
             
-            with torch.no_grad(): #Disable gradient tracking for speed and memory efficiency.
+            with torch.no_grad(): #Disable gradient tracking for speed and memory efficiency.w
                 for batch in val_loader:
                     input_ids = batch['input_ids'].to(device)
                     attention_mask = batch['attention_mask'].to(device)
