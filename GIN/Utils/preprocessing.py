@@ -6,8 +6,7 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 import networkx as nx
 import matplotlib.pyplot as plt
-from os import cpu_count
-from joblib import Parallel, delayed
+from multiprocessing import Pool, cpu_count
 
 
 def _looks_like_git_lfs_pointer(file_path: str) -> bool:
@@ -125,11 +124,12 @@ class MolecularPropertyPipeline:
         smiles9 = self.df9['smiles'].tolist()
 
         num_cores = cpu_count() if n_jobs == -1 else n_jobs
-        if verbose:
-            print(f"Using {num_cores} cores for canonicalization.")
+        with Pool(num_cores) as pool:
+            if verbose:
+                print(f"Using {num_cores} cores for canonicalization.")
 
-        self.df8['smiles'] = Parallel(n_jobs=n_jobs)(delayed(self._canonicalize)(s) for s in smiles8)
-        self.df9['smiles'] = Parallel(n_jobs=n_jobs)(delayed(self._canonicalize)(s) for s in smiles9)
+            self.df8['smiles'] = pool.map(self._canonicalize, smiles8)
+            self.df9['smiles'] = pool.map(self._canonicalize, smiles9)
 
         # Remove rows with invalid SMILES
         self.df8 = self.df8[self.df8['smiles'].notna()]
@@ -277,10 +277,14 @@ class MolecularPropertyPipeline:
         if verbose:
             print(f"Using {num_cores} cores for graph generation on {num_molecules} molecules")
 
-        verbosity = 10 if show_progress else 0
-        results = Parallel(n_jobs=n_jobs, verbose=verbosity)(
-            delayed(MolecularPropertyPipeline._smiles_to_graph)(args) for args in args_list
-        )
+        with Pool(num_cores) as pool:
+            if show_progress:
+                results = []
+                for i, result in enumerate(pool.imap(MolecularPropertyPipeline._smiles_to_graph, args_list)):
+                    results.append(result)
+                    self._print_progress(i + 1, num_molecules)
+            else:
+                results = pool.map(MolecularPropertyPipeline._smiles_to_graph, args_list)
 
         self.graphs = []
         self.smiles_list = []
