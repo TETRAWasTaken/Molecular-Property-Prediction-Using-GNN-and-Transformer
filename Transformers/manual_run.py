@@ -117,13 +117,7 @@ class main:
             "u0",
         ]
         self.cache_version = 1
-        self.DEVICE = (
-            torch.device("mps")
-            if torch.backends.mps.is_available()
-            else torch.device("cuda")
-            if torch.cuda.is_available()
-            else torch.device("cpu")
-        )
+        self.DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     def _default_cache_path(self) -> str:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

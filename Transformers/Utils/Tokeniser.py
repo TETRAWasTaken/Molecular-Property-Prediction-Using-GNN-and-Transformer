@@ -1,6 +1,6 @@
 import os
 from typing import Dict, List, Optional, Tuple
-from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor
 from rdkit import Chem
 
 import pandas as pd
@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 
 def _tokenize_smiles_chunk(args: Tuple[List[str], str, int]) -> Dict[str, torch.Tensor]:
     """
-    Worker function for process-based parallel tokenization.
+    Worker function for thread-based parallel tokenization.
     """
     smiles_chunk, model_name, max_length = args
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -154,13 +154,13 @@ class Tokeniser:
         smiles8 = self.df8['smiles'].tolist()
         smiles9 = self.df9['smiles'].tolist()
 
-        num_cores = cpu_count() if n_jobs == -1 else n_jobs
-        with Pool(num_cores) as pool:
+        num_workers = max(1, (os.cpu_count() or 1) if n_jobs == -1 else int(n_jobs))
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             if verbose:
-                print(f"Using {num_cores} cores for canonicalization.")
+                print(f"Using {num_workers} threads for canonicalization.")
 
-            self.df8['smiles'] = pool.map(self._canonicalize, smiles8)
-            self.df9['smiles'] = pool.map(self._canonicalize, smiles9)
+            self.df8['smiles'] = list(executor.map(self._canonicalize, smiles8))
+            self.df9['smiles'] = list(executor.map(self._canonicalize, smiles9))
 
         # Remove rows with invalid SMILES
         self.df8 = self.df8[self.df8['smiles'].notna()]
@@ -226,7 +226,7 @@ class Tokeniser:
         max_workers: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
         """
-        Process-based parallel batch tokenization for very large SMILES lists.
+        Thread-based parallel batch tokenization for very large SMILES lists.
         """
         if not smiles_list:
             raise ValueError("smiles_list is empty. Provide at least one SMILES string.")
@@ -237,12 +237,12 @@ class Tokeniser:
         if len(chunks) == 1:
             return self.batch_encode(smiles_list, max_length=effective_max_length)
 
-        worker_count = max_workers if max_workers is not None else cpu_count()
+        worker_count = max_workers if max_workers is not None else os.cpu_count()
         worker_count = max(1, worker_count if worker_count is not None else 1)
         worker_args = [(chunk, self.model_name, effective_max_length) for chunk in chunks]
 
-        with Pool(worker_count) as pool:
-            chunk_results = pool.map(_tokenize_smiles_chunk, worker_args)
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            chunk_results = list(executor.map(_tokenize_smiles_chunk, worker_args))
 
         return {
             "input_ids": torch.cat([result["input_ids"] for result in chunk_results], dim=0),
