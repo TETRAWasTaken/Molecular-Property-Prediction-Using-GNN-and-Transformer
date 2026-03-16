@@ -1,0 +1,115 @@
+import os
+import sys
+import torch
+from rdkit import Chem
+
+if __package__ in (None, ""):
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+from GIN.Utils.TrainingTesting import TrainingTesting
+from GIN.Utils.preprocessing import MolecularPropertyPipeline
+from GIN.Utils.paths import Paths
+from GIN.Evaluation.preprocessing import bundle_dataset, all_files
+
+def main():
+    paths = Paths()
+    model_path = paths.get_model_path()
+    
+    # 1. Load data using the Evaluation preprocessing script
+    print("Loading molecules for prediction...")
+    df = bundle_dataset(all_files)
+    if df.empty:
+        print("No molecules found for prediction.")
+        return
+
+    # 2. Setup Device and Pipeline
+    device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    print(f"Using device: {device}")
+
+    pipeline = MolecularPropertyPipeline(paths.get_qm8_path(), paths.get_qm9_path())
+    
+    # 3. Initialize and Load Model
+    # Dimensions based on MolecularPropertyPipeline._smiles_to_graph defaults
+    model = TrainingTesting(
+        node_in_dim=6,
+        edge_in_dim=3,
+        hidden_dim=128,
+        output_dim=12,
+        device=device
+    )
+
+    if not os.path.exists(model_path):
+        print(f"Model file not found at {model_path}. Please train the model first.")
+        return
+
+    try:
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        model.eval()
+        print("Model loaded successfully.")
+    except Exception as e:
+        print(f"Failed to load model: {e}")
+        return
+
+    # 4. Perform Predictions
+    sample_size = min(10, len(df))
+    sample_df = df.sample(frac=1).reset_index(drop=True)
+    print(f"\nPerforming predictions on {sample_size} random molecules...\n")
+    
+    target_cols = pipeline.target_cols
+    dummy_y = torch.zeros(len(target_cols))
+    dummy_mask = torch.zeros(len(target_cols))
+
+    successful_predictions = 0
+    for _, row in sample_df.iterrows():
+        if successful_predictions >= sample_size:
+            break
+
+        smiles = row['smiles']
+        print(f"Molecule: {smiles}")
+        print(
+            "Dataset actuals -> "
+            f"homo: {row.get('homo', 'N/A')}, "
+            f"lumo: {row.get('lumo', 'N/A')}, "
+            f"gap: {row.get('gap', 'N/A')}, "
+            f"e: {row.get('e', 'N/A')}"
+        )
+        
+        # Convert SMILES to graph
+        graph = pipeline._smiles_to_graph((smiles, dummy_y, dummy_mask))
+        
+        if graph is None:
+            print(f"Failed to process SMILES: {smiles}")
+            continue
+
+        # Prepare for inference
+        graph.batch = torch.zeros(graph.x.size(0), dtype=torch.long)
+        graph = graph.to(device)
+
+        with torch.no_grad():
+            prediction = model(graph)
+        
+        # Display results (properties defined in pipeline)
+        print("-" * 60)
+        print(f"{'Property':<15} | {'Prediction':<15} | {'Actual':<15}")
+        print("-" * 60)
+        for i, prop_name in enumerate(target_cols):
+            pred_val = prediction[0][i].item()
+            actual_val = row.get(prop_name, row.get(prop_name.lower(), "N/A"))
+            try:
+                actual_display = f"{float(actual_val):.4f}"
+            except (TypeError, ValueError):
+                actual_display = "N/A"
+            print(f"{prop_name:<15} | {pred_val:<15.4f} | {actual_display:<15}")
+        successful_predictions += 1
+        print("=" * 40 + "\n")
+
+    print(f"Completed predictions for {successful_predictions} molecules.")
+        
+
+if __name__ == "__main__":
+    main()

@@ -1,6 +1,7 @@
 import os
 from typing import Dict, List, Optional, Tuple
 from multiprocessing import Pool, cpu_count
+from rdkit import Chem
 
 import pandas as pd
 import torch
@@ -38,6 +39,10 @@ class Tokeniser:
     :type model_name: str
     :ivar max_length: The maximum length of a tokenized sequence.
     :type max_length: int
+    :ivar qm8_path: The file path to the QM8 dataset.
+    :type qm8_path: str
+    :ivar qm9_path: The file path to the QM9 dataset.
+    :type qm9_path: str
     
     """
     def __init__(self, qm8_path: str, qm9_path: str,
@@ -47,8 +52,50 @@ class Tokeniser:
         self.model_name = model_name
         self.tokeniser = AutoTokenizer.from_pretrained(model_name)
         self.max_length = max_length
-        self.df8 = pd.read_csv(qm8_path)
-        self.df9 = pd.read_csv(qm9_path)
+
+    @staticmethod
+    def _validate_expected_columns(df: pd.DataFrame, dataset_name: str, dataset_path: str):
+        """Fail fast with an actionable message when required dataset columns are missing."""
+        required_columns = {"smiles"}
+        missing_columns = sorted(required_columns - set(df.columns))
+        if missing_columns:
+            preview_columns = ", ".join(map(str, df.columns[:5])) or "<no columns>"
+            raise ValueError(
+                f"{dataset_name} dataset at '{dataset_path}' is missing required columns: {missing_columns}. "
+                f"Found columns: {preview_columns}. "
+                "If this file came from a Git clone, verify Git LFS assets were downloaded with 'git lfs pull'."
+            )
+        
+    def validate_data(self, verbose: bool = True):
+        """Check for missing values and data quality issues."""
+        if not verbose:
+            return
+        print("\n--- QM8 Data Quality ---")
+        print(f"Null values:\n{self.df8.isnull().sum()}")
+
+        print("\n--- QM9 Data Quality ---")
+        print(f"Null values:\n{self.df9.isnull().sum()}")
+
+        # Check for empty SMILES
+        empty_smiles_qm8 = (self.df8['smiles'].str.strip() == "").sum()
+        empty_smiles_qm9 = (self.df9['smiles'].str.strip() == "").sum()
+        print(f"\nEmpty SMILES in QM8: {empty_smiles_qm8}")
+        print(f"Empty SMILES in QM9: {empty_smiles_qm9}")
+
+
+    def load_data(self, verbose: bool = True) -> None:
+        """
+        Load QM8 and QM9 CSV files.
+        """
+        self.df8 = pd.read_csv(self.qm8_path)
+        self.df9 = pd.read_csv(self.qm9_path)
+
+        self._validate_expected_columns(self.df8, "QM8", self.qm8_path)
+        self._validate_expected_columns(self.df9, "QM9", self.qm9_path)
+
+        if verbose:
+            print(f"QM8 dataset loaded with shape: {self.df8.shape}")
+            print(f"QM9 dataset loaded with shape: {self.df9.shape}")
 
     @staticmethod
     def _chunk_smiles(smiles_list: List[str], chunk_size: int) -> List[List[str]]:
@@ -85,6 +132,43 @@ class Tokeniser:
         if not smiles_list:
             raise ValueError("smiles_list is empty. Cannot compute max length.")
         return max(len(s) for s in smiles_list)
+    
+    @staticmethod
+    def _canonicalize(smiles):
+        """Convert a SMILES string to its canonical form."""
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            return Chem.MolToSmiles(mol) if mol else None
+        except Exception:
+            return None
+
+    def canonicalize_smiles(
+        self,
+        verbose: bool = True,
+        n_jobs: int = -1,
+    ):
+        """Canonicalize SMILES in both datasets."""
+        if verbose:
+            print("\nCanonicalizing SMILES strings...")
+
+        smiles8 = self.df8['smiles'].tolist()
+        smiles9 = self.df9['smiles'].tolist()
+
+        num_cores = cpu_count() if n_jobs == -1 else n_jobs
+        with Pool(num_cores) as pool:
+            if verbose:
+                print(f"Using {num_cores} cores for canonicalization.")
+
+            self.df8['smiles'] = pool.map(self._canonicalize, smiles8)
+            self.df9['smiles'] = pool.map(self._canonicalize, smiles9)
+
+        # Remove rows with invalid SMILES
+        self.df8 = self.df8[self.df8['smiles'].notna()]
+        self.df9 = self.df9[self.df9['smiles'].notna()]
+
+        if verbose:
+            print(f"QM8 after canonicalization: {self.df8.shape}")
+            print(f"QM9 after canonicalization: {self.df9.shape}")
 
     def encode(self, smiles: str) -> Dict[str, torch.Tensor]:
         """
@@ -186,4 +270,18 @@ class Tokeniser:
             )
 
         return self.batch_encode(smiles_list, max_length=max_length)
+    
+    def run_full_pipeline(self, verbose: bool = True):
+        """Convenience method to run the entire tokenization pipeline."""
+        self.load_data(verbose=verbose)
+        self.validate_data(verbose=verbose)
+        self.canonicalize_smiles(verbose=verbose)
+
+        self.parallel_batch_encode(
+            self.smiles_list,
+            parallel=True,
+            max_length=self.max_length,
+            chunk_size=4096,
+            max_workers=None,
+        )
 

@@ -3,6 +3,14 @@ import copy
 from typing import Dict
 from torch_geometric.loader import DataLoader
 from sklearn.metrics import mean_absolute_error, r2_score
+import sys
+import os
+
+if __package__ in (None, ""):
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
 from GIN.Utils.GIN import GIN
 
 

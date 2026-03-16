@@ -62,14 +62,6 @@ class MolecularPropertyPipeline:
         if verbose:
             print("Loading QM8 and QM9 datasets...")
 
-        for dataset_name, dataset_path in (("QM8", self.qm8_path), ("QM9", self.qm9_path)):
-            if _looks_like_git_lfs_pointer(dataset_path):
-                raise RuntimeError(
-                    f"{dataset_name} dataset at '{dataset_path}' is a Git LFS pointer, not the actual CSV data. "
-                    "This usually means the repository was cloned or copied without fetching Git LFS assets. "
-                    "On the target machine, install Git LFS and run 'git lfs pull', or replace the file with the real dataset before running preprocessing."
-                )
-
         self.df8 = pd.read_csv(self.qm8_path)
         self.df9 = pd.read_csv(self.qm9_path)
 
@@ -79,7 +71,6 @@ class MolecularPropertyPipeline:
         if verbose:
             print(f"QM8 shape: {self.df8.shape}")
             print(f"QM9 shape: {self.df9.shape}")
-        return self.df8, self.df9
 
     @staticmethod
     def _validate_expected_columns(df: pd.DataFrame, dataset_name: str, dataset_path: str):
