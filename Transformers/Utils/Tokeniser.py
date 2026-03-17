@@ -48,7 +48,7 @@ class Tokeniser:
     def __init__(self, qm8_path: str, qm9_path: str,
                  model_name: str = "seyonec/ChemBERTa-zinc-base-v1",
                  max_length: int = 64):
-        os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         self.model_name = model_name
         self.tokeniser = AutoTokenizer.from_pretrained(model_name)
         self.max_length = max_length

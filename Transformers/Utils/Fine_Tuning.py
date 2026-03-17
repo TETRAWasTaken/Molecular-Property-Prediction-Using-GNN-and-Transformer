@@ -1,11 +1,9 @@
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from typing import Any
+from typing import Any, Optional
 
-from .Tokeniser import Tokeniser
 from .Transformer import StandaloneChemBERTa
-from .paths import Paths
 
 class FineTuning(StandaloneChemBERTa):
     """
@@ -17,15 +15,10 @@ class FineTuning(StandaloneChemBERTa):
 
     def __init__(self, model_name: str = "seyonec/ChemBERTa-zinc-base-v1", num_labels: int = 12):
         super().__init__(model_name=model_name, num_targets=num_labels)
-        self.paths = Paths()
-        self.tokeniser = Tokeniser(
-            qm8_path=self.paths.get_qm8_path(),
-            qm9_path=self.paths.get_qm9_path(),
-            model_name=model_name,
-        )
 
     def train_transformer(self, train_loader: Any, val_loader: Any,
-                          epochs: int = 10, lr: float = 5e-5, save_path: str = "best_chemberta.pth"):
+                          epochs: int = 10, lr: float = 5e-5, save_path: str = "best_chemberta.pth",
+                          device: Optional[torch.device] = None):
         """
         Main training engine with validation tracking and best-model saving.
         """
@@ -34,7 +27,8 @@ class FineTuning(StandaloneChemBERTa):
         if len(val_loader) == 0:
             raise ValueError("val_loader is empty. Please provide at least one validation batch.")
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(device)
         
         #AdamW is the standard optimizer for Transformer architectures
