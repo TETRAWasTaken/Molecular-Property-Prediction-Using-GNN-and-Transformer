@@ -86,8 +86,6 @@ class TrainingTesting(GIN):
                      patience: int = 20):
         """Full training loop with Early Stopping."""
         
-        if not self.is_fitted:
-            self.fit_normalizer(train_loader)
             
         best_val_mae = float('inf')
         early_stop_counter = 0
