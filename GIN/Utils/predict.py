@@ -2,7 +2,9 @@ import torch
 import pandas as pd
 import random
 import os
+import math
 from rdkit import Chem
+from rdkit.Chem import AllChem
 from torch_geometric.data import Data
 from GIN.Utils.TrainingTesting import TrainingTesting
 from GIN.Utils.preprocessing import MolecularPropertyPipeline
@@ -10,22 +12,42 @@ from GIN.Utils.paths import Paths
 
 def smiles_to_graph(smiles: str):
     """
-    Converts a SMILES string to a PyTorch Geometric Data object for inference.
+    Converts a SMILES string to a 3D PyTorch Geometric Data object for inference.
     """
     mol = Chem.MolFromSmiles(smiles)
     if not mol:
         return None
     
+    mol = Chem.AddHs(mol) # Crucial for 3D shape
+    
+    # Generate 3D Conformer
+    try:
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        AllChem.MMFFOptimizeMolecule(mol)
+        AllChem.ComputeGasteigerCharges(mol)
+    except ValueError:
+        return None 
+
+    conf = mol.GetConformer()
+    
     # --- Node Features (Atoms) ---
     node_feats = []
-    for atom in mol.GetAtoms():
+    for i, atom in enumerate(mol.GetAtoms()):
+        try:
+            charge = float(atom.GetProp('_GasteigerCharge'))
+            if math.isnan(charge) or math.isinf(charge):
+                charge = 0.0
+        except KeyError:
+            charge = 0.0
+
         node_feats.append([
-            atom.GetAtomicNum(),           # Atomic number
-            atom.GetDegree(),              # Number of bonds
-            atom.GetFormalCharge(),        # Charge
-            atom.GetTotalNumHs(),          # Number of hydrogens
-            int(atom.GetIsAromatic()),     # Is aromatic?
-            int(atom.GetHybridization())   # Hybridization type
+            atom.GetAtomicNum(),           
+            atom.GetDegree(),              
+            atom.GetFormalCharge(),        
+            atom.GetTotalNumHs(),          
+            int(atom.GetIsAromatic()),     
+            int(atom.GetHybridization()),  
+            charge                         # 7th Feature: Partial Charge
         ])
     x = torch.tensor(node_feats, dtype=torch.float)
     
@@ -37,21 +59,24 @@ def smiles_to_graph(smiles: str):
         i = bond.GetBeginAtomIdx()
         j = bond.GetEndAtomIdx()
         
+        pos_i = conf.GetAtomPosition(i)
+        pos_j = conf.GetAtomPosition(j)
+        distance = math.sqrt((pos_i.x - pos_j.x)**2 + (pos_i.y - pos_j.y)**2 + (pos_i.z - pos_j.z)**2)
+
         bond_feats = [
-            float(bond.GetBondTypeAsDouble()),  # Bond type
-            float(bond.GetIsConjugated()),      # Is conjugated?
-            float(bond.GetIsAromatic())         # Is aromatic?
+            float(bond.GetBondTypeAsDouble()),  
+            float(bond.GetIsConjugated()),      
+            float(bond.GetIsAromatic()),        
+            distance                            # 4th Feature: 3D Bond Length
         ]
         
         # Add bidirectional edges
-        edge_indices.append([i, j])
-        edge_attrs.append(bond_feats)
-        edge_indices.append([j, i])
-        edge_attrs.append(bond_feats)
+        edge_indices.extend([[i, j], [j, i]])
+        edge_attrs.extend([bond_feats, bond_feats])
     
     if len(edge_indices) == 0:
         edge_index = torch.empty((2, 0), dtype=torch.long)
-        edge_attr = torch.empty((0, 3), dtype=torch.float)
+        edge_attr = torch.empty((0, 4), dtype=torch.float) # Updated to 4
     else:
         edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
         edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
@@ -65,34 +90,45 @@ def main():
     # ==================== Configuration ====================
     NUM_SAMPLES = 5
     
-    # Initialize Paths
     paths = Paths()
     qm8_path = paths.get_qm8_path()
     qm9_path = paths.get_qm9_path()
     MODEL_PATH = paths.get_model_path()
 
-    # ==================== 1. Load Data ====================
-    print(f"Loading datasets from:\n - {qm8_path}\n - {qm9_path}")
-    
-    # Use the pipeline class to handle loading and merging logic
-    pipeline = MolecularPropertyPipeline(qm8_path, qm9_path)
-    pipeline.load_data()
-    pipeline.canonicalize_smiles()
-    df_merged = pipeline.merge_datasets()
-    
-    print(f"\nTotal molecules available: {len(df_merged)}")
-    
-    # ==================== 2. Load Model ====================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.backends.mps.is_available():
         device = torch.device("mps")
         
     print(f"Using device: {device}")
 
-    # Hyperparameters must match training
+    # ==================== 1. Load Denormalization Stats ====================
+    pipeline = MolecularPropertyPipeline(qm8_path, qm9_path)
+    cache_path = pipeline._default_cache_path()
+    
+    if not os.path.exists(cache_path):
+        print(f"Error: Cache not found at {cache_path}. Run the training pipeline first to generate stats.")
+        return
+        
+    print("Loading normalization stats from cache...")
+    payload = torch.load(cache_path, map_location=device, weights_only=False)
+    y_mean = payload.get("y_mean")
+    y_std = payload.get("y_std")
+    
+    if y_mean is None or y_std is None:
+        print("Error: y_mean or y_std not found in cache. Did you update preprocessing.py and run it?")
+        return
+
+    # ==================== 2. Load Raw Data for Sampling ====================
+    # Quick load just to pick 5 random molecules
+    pipeline.load_data(verbose=False)
+    pipeline.canonicalize_smiles(verbose=False)
+    df_merged = pipeline.merge_datasets(verbose=False)
+
+    # ==================== 3. Load Model ====================
+    # UPDATED DIMENSIONS: node=7, edge=4
     model = TrainingTesting(
-        node_in_dim=6,
-        edge_in_dim=3,
+        node_in_dim=7,
+        edge_in_dim=4,
         hidden_dim=128,
         output_dim=12,
         device=str(device)
@@ -104,16 +140,15 @@ def main():
 
     try:
         model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-        print("Model loaded successfully.")
+        print("Model weights loaded successfully.")
     except Exception as e:
         print(f"Failed to load model: {e}")
         return
 
-    # Explicitly move model to device again to ensure buffers are correct
     model.to(device)
     model.eval()
 
-    # ==================== 3. Predict on Random Samples ====================
+    # ==================== 4. Predict on Random Samples ====================
     print(f"\nSelecting {NUM_SAMPLES} random molecules for prediction...\n")
     
     sample_indices = random.sample(range(len(df_merged)), NUM_SAMPLES)
@@ -123,13 +158,14 @@ def main():
                   'mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0']
 
     for idx, row in samples.iterrows():
-        smiles = row['smiles_new']
+        # Make sure to use 'smiles' instead of 'smiles_new' unless you explicitly renamed it
+        smiles = row['smiles'] 
         print(f"Molecule: {smiles}")
         
-        # Convert to graph
+        # Convert to 3D graph
         graph = smiles_to_graph(smiles)
         if not graph:
-            print("  Invalid SMILES, skipping.")
+            print("  Invalid SMILES or failed 3D embedding, skipping.")
             continue
             
         graph = graph.to(device)
@@ -137,8 +173,9 @@ def main():
         # Predict
         with torch.no_grad():
             pred_norm = model(graph)
-            # Denormalize using stored stats in the model
-            pred_real = pred_norm * model.std_y + model.mean_y
+            
+            # STEP 2: The Denormalization Math
+            pred_real = (pred_norm * y_std) + y_mean
             
         # Display results
         print("-" * 50)
@@ -148,7 +185,6 @@ def main():
         for i, prop_name in enumerate(properties):
             pred_val = pred_real[0][i].item()
             
-            # Check if actual value exists in dataframe (it might be NaN)
             actual_val = row.get(prop_name, float('nan'))
             actual_str = f"{actual_val:.4f}" if pd.notna(actual_val) else "N/A"
             

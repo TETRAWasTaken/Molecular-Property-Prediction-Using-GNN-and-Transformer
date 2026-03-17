@@ -382,6 +382,8 @@ class MolecularPropertyPipeline:
             self.graphs = payload["graphs"]
             self.split_indices = payload["split_indices"]
             self.smiles_list = payload.get("smiles_list")
+            self.y_mean = payload.get("y_mean")
+            self.y_std = payload.get("y_std")
             if verbose:
                 print(f"Loaded {len(self.graphs)} preprocessed graphs from cache: {cache_path}")
             return True
@@ -398,6 +400,8 @@ class MolecularPropertyPipeline:
             "split_indices": self.split_indices,
             "smiles_list": self.smiles_list,
             "signature": self._source_signature(),
+            "y_mean": self.y_mean, 
+            "y_std": self.y_std
         }
         torch.save(payload, cache_path)
         if verbose:
