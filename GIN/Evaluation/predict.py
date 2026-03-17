@@ -30,16 +30,26 @@ def main():
     device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(f"Using device: {device}")
 
+    # --- NEW: Get Normalization Stats from Cache ---
     pipeline = MolecularPropertyPipeline(paths.get_qm8_path(), paths.get_qm9_path())
+    cache_path = pipeline._default_cache_path()
+    
+    if not os.path.exists(cache_path):
+        print(f"Error: Cache not found at {cache_path}. Run training first.")
+        return
+        
+    payload = torch.load(cache_path, map_location=device, weights_only=False)
+    y_mean = payload.get("y_mean")
+    y_std = payload.get("y_std")
     
     # 3. Initialize and Load Model
-    # Dimensions based on MolecularPropertyPipeline._smiles_to_graph defaults
+    # --- UPDATED DIMS: 7 and 4 ---
     model = TrainingTesting(
-        node_in_dim=6,
-        edge_in_dim=3,
+        node_in_dim=7,
+        edge_in_dim=4,
         hidden_dim=128,
         output_dim=12,
-        device=device
+        device=str(device)
     )
 
     if not os.path.exists(model_path):
@@ -58,7 +68,7 @@ def main():
     # 4. Perform Predictions
     sample_size = min(10, len(df))
     sample_df = df.sample(frac=1).reset_index(drop=True)
-    print(f"\nPerforming predictions on {sample_size} random molecules...\n")
+    print(f"\nPerforming predictions on {sample_size} random PC9 molecules...\n")
     
     target_cols = pipeline.target_cols
     dummy_y = torch.zeros(len(target_cols))
@@ -79,11 +89,11 @@ def main():
             f"e: {row.get('e', 'N/A')}"
         )
         
-        # Convert SMILES to graph
+        # Convert SMILES to 3D graph
         graph = pipeline._smiles_to_graph((smiles, dummy_y, dummy_mask))
         
         if graph is None:
-            print(f"Failed to process SMILES: {smiles}")
+            print(f"  Failed 3D embedding for SMILES: {smiles}")
             continue
 
         # Prepare for inference
@@ -91,14 +101,16 @@ def main():
         graph = graph.to(device)
 
         with torch.no_grad():
-            prediction = model(graph)
+            pred_norm = model(graph)
+            # --- NEW: DENORMALIZE ---
+            pred_real = (pred_norm * y_std) + y_mean
         
         # Display results (properties defined in pipeline)
         print("-" * 60)
         print(f"{'Property':<15} | {'Prediction':<15} | {'Actual':<15}")
         print("-" * 60)
         for i, prop_name in enumerate(target_cols):
-            pred_val = prediction[0][i].item()
+            pred_val = pred_real[0][i].item() # Use the denormalized value here!
             actual_val = row.get(prop_name, row.get(prop_name.lower(), "N/A"))
             try:
                 actual_display = f"{float(actual_val):.4f}"
@@ -106,7 +118,7 @@ def main():
                 actual_display = "N/A"
             print(f"{prop_name:<15} | {pred_val:<15.4f} | {actual_display:<15}")
         successful_predictions += 1
-        print("=" * 40 + "\n")
+        print("=" * 60 + "\n")
 
     print(f"Completed predictions for {successful_predictions} molecules.")
         
