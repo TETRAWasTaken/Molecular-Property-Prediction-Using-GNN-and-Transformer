@@ -7,6 +7,8 @@ from torch_geometric.loader import DataLoader
 import networkx as nx
 import matplotlib.pyplot as plt
 from multiprocessing import Pool, cpu_count
+import math
+from rdkit.Chem import AllChem
 
 
 def _looks_like_git_lfs_pointer(file_path: str) -> bool:
@@ -179,45 +181,81 @@ class MolecularPropertyPipeline:
         return self.Y, self.mask
 
     def get_tensors(self, verbose: bool = True):
-        """Convert Y and mask to PyTorch tensors."""
+        """Convert Y and mask to PyTorch tensors and perform Masked Z-Score Normalization."""
         if verbose:
-            print("\nConverting to PyTorch tensors...")
+            print("\nConverting to PyTorch tensors and Normalizing...")
+            
         self.Y_tensor = torch.tensor(self.Y, dtype=torch.float32)
         self.mask_tensor = torch.tensor(self.mask, dtype=torch.float32)
+
+        # --- MASKED NORMALIZATION ---
+        # 1. Calculate sum and count of only the valid (masked) values
+        sum_y = (self.Y_tensor * self.mask_tensor).sum(dim=0)
+        count_y = self.mask_tensor.sum(dim=0)
+        
+        # 2. Calculate true mean
+        self.y_mean = sum_y / count_y
+        
+        # 3. Calculate true standard deviation
+        diff_sq = ((self.Y_tensor - self.y_mean) * self.mask_tensor) ** 2
+        self.y_std = torch.sqrt(diff_sq.sum(dim=0) / count_y)
+        self.y_std[self.y_std == 0] = 1.0 # Safety fallback to prevent division by zero
+
+        # 4. Apply Z-score normalization ONLY to real values. Keep fake values as 0.0.
+        self.Y_tensor = torch.where(
+            self.mask_tensor == 1,
+            (self.Y_tensor - self.y_mean) / self.y_std,
+            0.0 
+        )
+
         if verbose:
             print(f"Y tensor shape: {self.Y_tensor.shape}")
-            print(f"Mask tensor shape: {self.mask_tensor.shape}")
+            print("Target data successfully normalized (Mean=0, Std=1).")
+            
         return self.Y_tensor, self.mask_tensor
 
     # ==================== Graph Generation ====================
     @staticmethod
     def _smiles_to_graph(args):
-        """
-        Convert a SMILES string to a PyTorch Geometric Data object (graph).
-
-        Args:
-            smiles: Canonical SMILES string
-            y_values: Target property values for this molecule
-            mask_values: Mask values for this molecule
-
-        Returns:
-            Data object with node features, edge indices/attributes, targets, and masks
-        """
         smiles, y_values, mask_values = args
+        
+        # 1. Load and prepare for 3D
         mol = Chem.MolFromSmiles(smiles)
         if not mol:
             return None
+            
+        mol = Chem.AddHs(mol) # Hydrogens are required for correct 3D geometry
+        
+        # 2. Generate 3D Conformer & Calculate Charges
+        try:
+            AllChem.EmbedMolecule(mol, randomSeed=42)
+            AllChem.MMFFOptimizeMolecule(mol)
+            AllChem.ComputeGasteigerCharges(mol)
+        except ValueError:
+            # If 3D embedding fails (rare, but happens), drop the molecule
+            return None 
+
+        conf = mol.GetConformer()
 
         # --- Node Features (Atoms) ---
         node_feats = []
-        for atom in mol.GetAtoms():
+        for i, atom in enumerate(mol.GetAtoms()):
+            # Safely extract partial charge
+            try:
+                charge = float(atom.GetProp('_GasteigerCharge'))
+                if math.isnan(charge) or math.isinf(charge):
+                    charge = 0.0
+            except KeyError:
+                charge = 0.0
+
             node_feats.append([
-                atom.GetAtomicNum(),           # Atomic number
-                atom.GetDegree(),              # Number of bonds
-                atom.GetFormalCharge(),        # Charge
-                atom.GetTotalNumHs(),          # Number of hydrogens
-                int(atom.GetIsAromatic()),     # Is aromatic?
-                int(atom.GetHybridization())   # Hybridization type
+                atom.GetAtomicNum(),           
+                atom.GetDegree(),              
+                atom.GetFormalCharge(),        
+                atom.GetTotalNumHs(),          
+                int(atom.GetIsAromatic()),     
+                int(atom.GetHybridization()),  
+                charge                         # NEW: Partial Charge (Index 6)
             ])
         x = torch.tensor(node_feats, dtype=torch.float)
 
@@ -229,22 +267,25 @@ class MolecularPropertyPipeline:
             i = bond.GetBeginAtomIdx()
             j = bond.GetEndAtomIdx()
 
+            # NEW: Calculate exact 3D distance between atom i and j
+            pos_i = conf.GetAtomPosition(i)
+            pos_j = conf.GetAtomPosition(j)
+            distance = math.sqrt((pos_i.x - pos_j.x)**2 + (pos_i.y - pos_j.y)**2 + (pos_i.z - pos_j.z)**2)
+
             bond_feats = [
-                float(bond.GetBondTypeAsDouble()),  # Bond type (1.0=single, 2.0=double, 1.5=aromatic)
-                float(bond.GetIsConjugated()),      # Is conjugated?
-                float(bond.GetIsAromatic())         # Is aromatic?
+                float(bond.GetBondTypeAsDouble()),  
+                float(bond.GetIsConjugated()),      
+                float(bond.GetIsAromatic()),        
+                distance                            # NEW: 3D Bond Length in Å (Index 3)
             ]
 
             # Add bidirectional edges
-            edge_indices.append([i, j])
-            edge_attrs.append(bond_feats)
-            edge_indices.append([j, i])
-            edge_attrs.append(bond_feats)
+            edge_indices.extend([[i, j], [j, i]])
+            edge_attrs.extend([bond_feats, bond_feats])
 
-        # Handle molecules with no bonds (single atoms)
         if len(edge_indices) == 0:
             edge_index = torch.empty((2, 0), dtype=torch.long)
-            edge_attr = torch.empty((0, 3), dtype=torch.float)
+            edge_attr = torch.empty((0, 4), dtype=torch.float) # Note: dim is now 4
         else:
             edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
             edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
@@ -254,7 +295,6 @@ class MolecularPropertyPipeline:
         mask = mask_values.clone().detach().view(1, -1)
 
         return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, mask=mask)
-
     def generate_graphs(
         self,
         verbose: bool = True,
@@ -507,44 +547,4 @@ class MolecularPropertyPipeline:
             print("Data sparsity: N/A (loaded from cache)")
         print(f"DataLoader batches: {len(self.train_loader) if self.train_loader else 'Not created'}")
 
-    def visualize_molecule(self, index: int):
-        """Visualize a molecule structure from the graphs."""
-        if index >= len(self.graphs):
-            print(f"Index {index} out of range. Available graphs: {len(self.graphs)}")
-            return
-
-        data = self.graphs[index]
-        smiles = None
-        if self.df_merged is not None:
-            smiles = self.df_merged['smiles'].iloc[index]
-        elif self.smiles_list is not None and index < len(self.smiles_list):
-            smiles = self.smiles_list[index]
-        else:
-            smiles = "Unknown (cache without smiles metadata)"
-
-        G = nx.Graph()
-
-        # Create node labels with atomic symbols
-        node_labels = {}
-        for i in range(data.num_nodes):
-            atomic_num = int(data.x[i][0])
-            symbol = Chem.GetPeriodicTable().GetElementSymbol(atomic_num)
-            node_labels[i] = f"{i}:{symbol}"
-            G.add_node(i)
-
-        # Add edges
-        edge_list = data.edge_index.t().tolist()
-        G.add_edges_from(edge_list)
-
-        # Plot
-        plt.figure(figsize=(10, 7))
-        pos = nx.spring_layout(G, seed=42)
-
-        nx.draw(G, pos, with_labels=True, labels=node_labels,
-                node_color='skyblue', node_size=1000,
-                font_color='black', font_weight='bold', font_size=9,
-                edge_color='gray', width=2)
-
-        plt.title(f"Molecule {index}: {smiles}", fontsize=12, fontweight='bold')
-        plt.tight_layout()
-        plt.show()
+    
