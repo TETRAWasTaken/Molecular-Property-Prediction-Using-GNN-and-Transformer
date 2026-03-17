@@ -7,9 +7,5 @@ numpy
 networkx
 rdkit
 scikit-learn
-<<<<<<< HEAD
 transformers
 art
-=======
-transformers 
->>>>>>> 66c5714 (Online changes)
