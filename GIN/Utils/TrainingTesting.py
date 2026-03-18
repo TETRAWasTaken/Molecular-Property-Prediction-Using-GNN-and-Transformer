@@ -20,14 +20,30 @@ class TrainingTesting(GIN):
                  hidden_dim: int = 128, 
                  output_dim: int = 12, 
                  dropout: float = 0.2,
-                 learning_rate: float = 0.001,
+                 learning_rate: float = 3e-4,
                  weight_decay: float = 5e-4,
-                 device: str = "mps"):
+                 device: str = "mps",
+                 target_mean: torch.Tensor = None,
+                 target_std: torch.Tensor = None):
         
         super().__init__(node_in_dim, edge_in_dim, hidden_dim, output_dim, num_layer=3, dropout=dropout)
         
         self.device_name = device
         self.to(self.device_name)
+
+        # Keep normalization stats on the same device for denormalized metrics.
+        if target_mean is not None and target_std is not None:
+            self.target_mean = target_mean.detach().clone().float().to(self.device_name)
+            self.target_std = target_std.detach().clone().float().to(self.device_name)
+        else:
+            self.target_mean = None
+            self.target_std = None
+
+        if learning_rate > 1e-3:
+            raise ValueError(
+                f"Learning rate {learning_rate} is too high for stable GIN training. "
+                "Use a value <= 1e-3 (recommended 3e-4)."
+            )
         
         self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate, weight_decay=weight_decay)
         self.criterion = torch.nn.SmoothL1Loss(reduction='none') 
@@ -45,9 +61,13 @@ class TrainingTesting(GIN):
             
             pred = self(batch)
             
-            # Data is ALREADY normalized by preprocessing.py. Just calculate masked loss!
+            # batch.y is already normalized in preprocessing; optimize in normalized space.
             mask = batch.mask
             loss = (self.criterion(pred, batch.y) * mask).sum() / mask.sum()
+
+            if not torch.isfinite(loss):
+                raise RuntimeError("Encountered non-finite training loss. Lower learning rate or inspect data.")
+
             loss.backward()
             
             torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
@@ -61,22 +81,42 @@ class TrainingTesting(GIN):
         self.eval() 
         preds_list = []
         true_list = []
+        mask_list = []
         
         with torch.no_grad():
             for batch in loader:
                 batch = batch.to(self.device_name)
-                # For validation loss, we just compare the raw Z-scores to see if it's learning
                 pred_norm = self(batch)
                 
                 preds_list.append(pred_norm.cpu())
                 true_list.append(batch.y.cpu())
+                mask_list.append(batch.mask.cpu())
                 
-        y_pred = torch.cat(preds_list, dim=0).numpy()
-        y_true = torch.cat(true_list, dim=0).numpy()
+        y_pred_norm = torch.cat(preds_list, dim=0)
+        y_true_norm = torch.cat(true_list, dim=0)
+        y_mask = torch.cat(mask_list, dim=0)
+
+        # Validation optimization metric should stay in normalized space.
+        val_loss = ((torch.abs(y_pred_norm - y_true_norm) * y_mask).sum() / y_mask.sum()).item()
+
+        if self.target_mean is None or self.target_std is None:
+            # Fallback to normalized metrics if denorm stats are unavailable.
+            valid_idx = y_mask == 1
+            y_pred_eval = y_pred_norm[valid_idx].numpy()
+            y_true_eval = y_true_norm[valid_idx].numpy()
+        else:
+            mean_cpu = self.target_mean.detach().cpu().view(1, -1)
+            std_cpu = self.target_std.detach().cpu().view(1, -1)
+            y_pred_denorm = y_pred_norm * std_cpu + mean_cpu
+            y_true_denorm = y_true_norm * std_cpu + mean_cpu
+            valid_idx = y_mask == 1
+            y_pred_eval = y_pred_denorm[valid_idx].numpy()
+            y_true_eval = y_true_denorm[valid_idx].numpy()
         
         return {
-            "mae": mean_absolute_error(y_true, y_pred),
-            "r2": r2_score(y_true, y_pred)
+            "val_loss": val_loss,
+            "mae": mean_absolute_error(y_true_eval, y_pred_eval),
+            "r2": r2_score(y_true_eval, y_pred_eval)
         }
 
     def run_training(self, 
@@ -97,10 +137,14 @@ class TrainingTesting(GIN):
             loss = self.train_epoch(train_loader)
             metrics = self.evaluate(val_loader)
             val_mae = metrics["mae"]
+            val_loss = metrics["val_loss"]
             
-            self.scheduler.step(val_mae)
+            self.scheduler.step(val_loss)
             
-            print(f"Epoch {epoch:03d} | Loss: {loss:.4f} | Val MAE: {val_mae:.4f}")
+            print(
+                f"Epoch {epoch:03d} | Train Loss (norm): {loss:.4f} "
+                f"| Val Loss (norm): {val_loss:.4f} | Val MAE (denorm): {val_mae:.4f}"
+            )
             
             # Early Stopping Check
             if val_mae < best_val_mae:

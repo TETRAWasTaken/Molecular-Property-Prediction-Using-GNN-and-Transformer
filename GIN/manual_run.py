@@ -46,11 +46,13 @@ class main:
         self.HIDDEN_DIM = 128
         self.OUTPUT_DIM = 12
         self.DROPOUT = 0.2
-        self.LEARNING_RATE = 0.001
+        self.LEARNING_RATE = 3e-4
         self.WEIGHT_DECAY = 5e-4
         self.EPOCHS = 25
         self.PATIENCE = 20
         self.DEVICE = torch.device("cpu")
+        self.target_mean = None
+        self.target_std = None
         #torch.device("cuda") if torch.cuda.is_available() else torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
     def _read_choice(self, prompt: str, valid_choices: tuple[str, ...]) -> str:
@@ -85,6 +87,8 @@ class main:
         sample_batch = next(iter(self.train_loader))
         self.node_in_dim = sample_batch.num_node_features
         self.edge_in_dim = sample_batch.edge_attr.shape[1]
+        self.target_mean = pipeline.y_mean
+        self.target_std = pipeline.y_std
         tprint("Preprocessing Completed")
 
     def build_model(self):
@@ -97,7 +101,9 @@ class main:
             dropout=self.DROPOUT,
             learning_rate=self.LEARNING_RATE,
             weight_decay=self.WEIGHT_DECAY,
-            device=self.DEVICE
+            device=self.DEVICE,
+            target_mean=self.target_mean,
+            target_std=self.target_std,
         )
         print(f"\nModel initialized with {sum(p.numel() for p in self.model.parameters()):,} parameters.")
 
