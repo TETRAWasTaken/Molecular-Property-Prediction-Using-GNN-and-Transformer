@@ -19,9 +19,9 @@ class GIN(torch.nn.Module):
     def __init__(self, 
                  node_in_dim: int = 6,
                  edge_in_dim: int = 3,
-                 hidden_dim: int = 128,
+                 hidden_dim: int = 256,
                  output_dim: int = 12,
-                 num_layer: int = 5,
+                 num_layer: int = 7,
                  dropout: float = 0.2):
         super(GIN, self).__init__()
 
