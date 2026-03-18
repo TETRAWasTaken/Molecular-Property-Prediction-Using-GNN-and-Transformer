@@ -71,7 +71,7 @@ class main:
         verbose: bool = True,
         show_progress: bool = True,
         batch_size: int = 32,
-        epochs: int = 10,
+        epochs: int = 20,
         learning_rate: float = 5e-5,
         max_length: int = 64,
         seed: int = 42,
