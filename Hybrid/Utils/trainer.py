@@ -153,10 +153,11 @@ class HybridTrainer:
             loss = self.train_epoch(train_loader)
             metrics = self.evaluate(val_loader)
             val_mae = metrics["mae"]
+            val_r2 = metrics["r2"]
             
             self.scheduler.step(val_mae)
             
-            print(f"Epoch {epoch:03d}/{epochs} | Loss: {loss:.4f} | Val MAE: {val_mae:.4f}")
+            print(f"Epoch {epoch:03d}/{epochs} | Loss: {loss:.4f} | Val MAE: {val_mae:.4f} | Val R²: {val_r2:.4f}")
             
             # Early Stopping Check
             if val_mae < best_val_mae:

@@ -34,14 +34,19 @@ class HybridRunner:
         self.EPOCHS = 25
         self.PATIENCE = 15
         
-        self.DEVICE = torch.device("cuda" if torch.cuda.is_available() else 
-                                   "mps" if torch.backends.mps.is_available() else "cpu")
+        self.DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         
         self.pipeline = None
         self.model = None
         self.trainer = None
+        self.train_loader = None
+        self.val_loader = None
+        self.test_loader = None
+        self.node_in_dim = None
+        self.edge_in_dim = None
 
-    def _read_choice(self, prompt: str, valid_choices: tuple) -> str:
+    @staticmethod
+    def _read_choice(prompt: str, valid_choices: tuple) -> str:
         while True:
             print(prompt)
             choice = input().strip().lower()
@@ -111,8 +116,13 @@ class HybridRunner:
         )
 
         # Evaluation
+        train_metrics = self.trainer.evaluate(self.train_loader)
+        val_metrics = self.trainer.evaluate(self.val_loader)
         test_metrics = self.trainer.evaluate(self.test_loader)
+        
         print(f"\n{'=' * 60}")
+        print(f"Hybrid Train Results —  MAE: {train_metrics['mae']:.4f}  |  R²: {train_metrics['r2']:.4f}")
+        print(f"Hybrid Val Results   —  MAE: {val_metrics['mae']:.4f}  |  R²: {val_metrics['r2']:.4f}")
         print(f"Hybrid Test Results  —  MAE: {test_metrics['mae']:.4f}  |  R²: {test_metrics['r2']:.4f}")
         print(f"{'=' * 60}")
 
