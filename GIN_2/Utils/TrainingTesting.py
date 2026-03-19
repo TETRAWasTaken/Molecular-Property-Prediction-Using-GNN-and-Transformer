@@ -5,6 +5,7 @@ from torch_geometric.loader import DataLoader
 from sklearn.metrics import mean_absolute_error, r2_score
 import sys
 import os
+from typing import Dict, Any
 
 if __package__ in (None, ""):
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -94,7 +95,7 @@ class TrainingTesting(GIN):
             
         return total_loss / len(loader)
 
-    def evaluate(self, loader: DataLoader) -> Dict[str, float]:
+    def evaluate(self, loader: DataLoader) -> Dict[str, Any]:
         self.eval() 
         preds_list = []
         true_list = []
@@ -127,21 +128,36 @@ class TrainingTesting(GIN):
             y_pred_denorm = y_pred_norm * std_cpu + mean_cpu
             y_true_denorm = y_true_norm * std_cpu + mean_cpu
             
-        valid_idx = y_mask == 1
-        y_pred_eval = y_pred_denorm[valid_idx].numpy()
-        y_true_eval = y_true_denorm[valid_idx].numpy()
+        mae_per_prop = []
+        r2_per_prop = []
         
+        num_targets = y_true_denorm.shape[1]
+        for i in range(num_targets):
+            # Isolate the predictions and targets for this specific column
+            valid_idx = y_mask[:, i] == 1
+            if valid_idx.sum() > 0:
+                y_p = y_pred_denorm[valid_idx, i].numpy()
+                y_t = y_true_denorm[valid_idx, i].numpy()
+                mae_per_prop.append(mean_absolute_error(y_t, y_p))
+                r2_per_prop.append(r2_score(y_t, y_p))
+            else:
+                mae_per_prop.append(0.0)
+                r2_per_prop.append(0.0)
+                
         return {
             "val_loss": val_loss,
-            "mae": mean_absolute_error(y_true_eval, y_pred_eval),
-            "r2": r2_score(y_true_eval, y_pred_eval)
+            "mae": sum(mae_per_prop) / num_targets, # Overall average MAE
+            "r2": sum(r2_per_prop) / num_targets,   # Overall average R2
+            "mae_per_prop": mae_per_prop,           # List of 12 MAEs
+            "r2_per_prop": r2_per_prop              # List of 12 R2s
         }
 
-    def run_training(self, train_loader: DataLoader, val_loader: DataLoader, epochs: int = 50, patience: int = 20):
-        # ... [Your exact same run_training loop remains unchanged] ...
+    def run_training(self, train_loader: DataLoader, val_loader: DataLoader, 
+                     epochs: int = 50, patience: int = 20, target_cols: list = None):
         best_val_mae = float('inf')
         early_stop_counter = 0
         best_weights = None
+        best_epoch = 0
         
         print(f"Starting Training on {self.device_name} for {epochs} epochs...")
         
@@ -155,20 +171,30 @@ class TrainingTesting(GIN):
             
             print(
                 f"Epoch {epoch:03d} | Train Loss (norm): {loss:.4f} "
-                f"| Val Loss (norm): {val_loss:.4f} | Val MAE (denorm): {val_mae:.4f} | Val R2: {metrics['r2']:.4f}"
+                f"| Val Loss (norm): {val_loss:.4f} | Val MAE (denorm): {val_mae:.4f} | Val R²: {metrics['r2']:.4f}"
             )
+            
+            # --- NEW: Print Per-Property Breakdown cleanly ---
+            # Triggers on the 1st epoch, every 10th epoch, or if it finds a new "Best Model"
+            if epoch == 1 or epoch % 10 == 0 or val_mae < best_val_mae:
+                print("\n  --- Per-Property Validation Breakdown ---")
+                for i in range(len(metrics["mae_per_prop"])):
+                    prop_name = target_cols[i] if target_cols else f"Target_{i}"
+                    print(f"  {prop_name.ljust(10)} | MAE: {metrics['mae_per_prop'][i]:.4f} | R²: {metrics['r2_per_prop'][i]:.4f}")
+                print("  -----------------------------------------\n")
             
             if val_mae < best_val_mae:
                 best_val_mae = val_mae
+                best_epoch = epoch
                 best_weights = copy.deepcopy(self.state_dict())
                 early_stop_counter = 0
             else:
                 early_stop_counter += 1
                 
             if early_stop_counter >= patience:
-                print(f"Early stopping at epoch {epoch}")
+                print(f"Early stopping triggered at epoch {epoch}")
                 break
                 
         if best_weights:
             self.load_state_dict(best_weights)
-            print("Restored best model weights.")
+            print(f"Restored best model weights from Epoch {best_epoch}.")
