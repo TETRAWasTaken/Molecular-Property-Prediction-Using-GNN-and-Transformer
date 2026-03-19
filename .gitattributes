@@ -5,3 +5,4 @@
 *.pt filter=lfs diff=lfs merge=lfs -text
 .pt filter=lfs diff=lfs merge=lfs -text
 >>>>>>> 53239188f3ceb851238f91017930aaa70efb41ae
+.parquet filter=lfs diff=lfs merge=lfs -text
