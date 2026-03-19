@@ -17,7 +17,7 @@ class FineTuning(StandaloneChemBERTa):
         super().__init__(model_name=model_name, num_targets=num_labels)
 
     def train_transformer(self, train_loader: Any, val_loader: Any,
-                          epochs: int = 10, lr: float = 5e-5, save_path: str = "best_chemberta.pth",
+                          epochs: int = 15, lr: float = 5e-5, save_path: str = "best_chemberta.pth",
                           device: Optional[torch.device] = None):
         """
         Main training engine with validation tracking and best-model saving.

@@ -6,6 +6,8 @@ import pandas as pd
 import torch
 from art import tprint
 from torch.utils.data import DataLoader, Dataset
+import numpy as np
+from sklearn.preprocessing import StandardScaler
 
 # Support both `python Transformers/manual_run.py` and `python -m Transformers.manual_run`.
 if __package__ in (None, ""):
@@ -276,10 +278,27 @@ class main:
         if self.verbose:
             print(f"Merged dataset shape: {self.df_merged.shape}")
 
-        labels = torch.tensor(
-            self.df_merged[self.TARGET_COLS].fillna(0).values,
-            dtype=torch.float32,
-        )
+        # Extract raw targets and prepare for scaling
+        raw_targets = self.df_merged[self.TARGET_COLS].values
+        scaled_targets = np.copy(raw_targets)
+        self.scalers = {} 
+
+        # Scale each column individually, ignoring NaNs
+        for i, col_name in enumerate(self.TARGET_COLS):
+            col_data = raw_targets[:, i]
+            mask = ~np.isnan(col_data)
+            
+            if mask.any():
+                scaler = StandardScaler()
+                scaled_targets[mask, i] = scaler.fit_transform(col_data[mask].reshape(-1, 1)).flatten()
+                self.scalers[col_name] = scaler
+        
+        # Replace remaining NaNs with 0 (your nan_mask handles these during loss calculation)
+        scaled_targets = np.nan_to_num(scaled_targets, nan=0.0)
+
+        # Create the labels tensor from the scaled data
+        labels = torch.tensor(scaled_targets, dtype=torch.float32)
+
         nan_mask = torch.tensor(
             self.df_merged[self.TARGET_COLS].notna().astype(int).values,
             dtype=torch.float32,
@@ -350,6 +369,12 @@ class main:
 
         total_loss = 0.0
         batch_count = 0
+        
+        # Trackers for column-wise loss
+        num_targets = len(self.TARGET_COLS)
+        col_squared_errors = torch.zeros(num_targets).to(self.DEVICE)
+        col_counts = torch.zeros(num_targets).to(self.DEVICE)
+
         with torch.no_grad():
             for batch in self.test_loader:
                 input_ids = batch["input_ids"].to(self.DEVICE)
@@ -358,12 +383,34 @@ class main:
                 nan_mask = batch["nan_mask"].to(self.DEVICE)
 
                 predictions = self.model(input_ids, attention_mask)
+                
+                # Overall loss (your original code)
                 loss = self.model.masked_mse_loss(predictions, labels, nan_mask)
                 total_loss += loss.item()
                 batch_count += 1
+                
+                # Column-wise loss calculation
+                squared_errors = (predictions - labels) ** 2
+                masked_errors = squared_errors * nan_mask
+                
+                # Sum errors and counts down the batch dimension (dim=0)
+                col_squared_errors += masked_errors.sum(dim=0)
+                col_counts += nan_mask.sum(dim=0)
+
+        # Print the breakdown
+        print("\n" + "="*35)
+        print("  Per-Property Scaled Test MSE")
+        print("="*35)
+        
+        col_mse = col_squared_errors / torch.clamp(col_counts, min=1.0)
+        for i, col_name in enumerate(self.TARGET_COLS):
+            print(f"{col_name.ljust(10)} : {col_mse[i].item():.4f}")
+        
+        print("="*35)
 
         test_loss = total_loss / max(batch_count, 1)
-        print(f"Test masked MSE: {test_loss:.4f}")
+        print(f"Overall Test masked MSE: {test_loss:.4f}\n")
+        
         return test_loss
     
     def run(self):
@@ -388,7 +435,7 @@ if __name__ == "__main__":
     parser.add_argument("--cache_path", type=str, default=None, help="Optional custom cache file path")
     parser.add_argument("--save_path", type=str, default=None, help="Optional custom model save path")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for fine-tuning")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of fine-tuning epochs")
+    parser.add_argument("--epochs", type=int, default=15, help="Number of fine-tuning epochs")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--max_length", type=int, default=64, help="Maximum tokenizer sequence length")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for data splitting")
