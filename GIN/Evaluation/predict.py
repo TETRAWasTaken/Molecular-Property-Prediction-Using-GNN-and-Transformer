@@ -1,5 +1,6 @@
 import os
 import sys
+import warnings
 import torch
 from rdkit import Chem
 
@@ -41,6 +42,32 @@ def main():
     payload = torch.load(cache_path, map_location=device, weights_only=False)
     y_mean = payload.get("y_mean")
     y_std = payload.get("y_std")
+
+    # Legacy cache files may not store normalization stats.
+    # Fall back to identity denormalization to avoid crashing inference.
+    target_cols = pipeline.target_cols
+    target_dim = len(target_cols)
+    if y_mean is None or y_std is None:
+        warnings.warn(
+            "Normalization stats (y_mean/y_std) were not found in cache. "
+            "Using identity denormalization, so outputs are in normalized model space. "
+            "Rebuild preprocessing cache to restore denormalized outputs.",
+            RuntimeWarning,
+        )
+        y_mean = torch.zeros(target_dim, dtype=torch.float32, device=device)
+        y_std = torch.ones(target_dim, dtype=torch.float32, device=device)
+    else:
+        y_mean = torch.as_tensor(y_mean, dtype=torch.float32, device=device).view(-1)
+        y_std = torch.as_tensor(y_std, dtype=torch.float32, device=device).view(-1)
+
+        if y_mean.numel() != target_dim or y_std.numel() != target_dim:
+            warnings.warn(
+                f"Normalization stats shape mismatch (mean={y_mean.numel()}, std={y_std.numel()}, expected={target_dim}). "
+                "Using identity denormalization.",
+                RuntimeWarning,
+            )
+            y_mean = torch.zeros(target_dim, dtype=torch.float32, device=device)
+            y_std = torch.ones(target_dim, dtype=torch.float32, device=device)
     
     # 3. Initialize and Load Model
     # --- UPDATED DIMS: 7 and 4 ---
@@ -70,7 +97,6 @@ def main():
     sample_df = df.sample(frac=1).reset_index(drop=True)
     print(f"\nPerforming predictions on {sample_size} random PC9 molecules...\n")
     
-    target_cols = pipeline.target_cols
     dummy_y = torch.zeros(len(target_cols))
     dummy_mask = torch.zeros(len(target_cols))
 
