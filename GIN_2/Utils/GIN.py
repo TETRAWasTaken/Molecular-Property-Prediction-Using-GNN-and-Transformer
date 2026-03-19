@@ -17,12 +17,12 @@ class GIN(torch.nn.Module):
     :param dropout: The dropout rate for regularization during training.
     """
     def __init__(self, 
-                 node_in_dim: int = 6,
-                 edge_in_dim: int = 3,
+                 node_in_dim: int = 26,
+                 edge_in_dim: int = 6,
                  hidden_dim: int = 256,
                  output_dim: int = 12,
                  num_layer: int = 7,
-                 dropout: float = 0.2):
+                 dropout: float = 0.05):
         super(GIN, self).__init__()
 
         self.num_layer = num_layer
@@ -41,16 +41,16 @@ class GIN(torch.nn.Module):
         for _ in range(num_layer):
             mlp = Sequential(
                 Linear(hidden_dim, hidden_dim),
+                BatchNorm1d(hidden_dim),
                 ReLU(),
                 Linear(hidden_dim, hidden_dim),
-                ReLU(),
-                Dropout(dropout)
             )
             self.convs.append(GINEConv(mlp))
             self.batch_norms.append(BatchNorm1d(hidden_dim))
 
             self.vn_mlp.append(Sequential(
                 Linear(hidden_dim, hidden_dim),
+                BatchNorm1d(hidden_dim),
                 ReLU(),
                 Linear(hidden_dim, hidden_dim),
                 ReLU(),
@@ -59,7 +59,8 @@ class GIN(torch.nn.Module):
 
         
         self.prediction_head = Sequential(
-            Linear(hidden_dim, hidden_dim),
+            Linear(hidden_dim * (num_layer + 1), hidden_dim),
+            BatchNorm1d(hidden_dim),
             ReLU(),
             Dropout(dropout),
             Linear(hidden_dim, output_dim)
@@ -83,12 +84,14 @@ class GIN(torch.nn.Module):
             h = self.convs[layer](h, edge_index, edge_embeddings)
             h = self.batch_norms[layer](h)
             h = F.relu(h)
+            h = F.dropout(h, p=self.dropout_rate, training=self.training)
             h_list.append(h)
 
             if layer < self.num_layer - 1:
-                virtual_node_feat = virtual_node_feat + global_add_pool(h, batch)
-                virtual_node_feat = self.vn_mlp[layer](virtual_node_feat)
-            
-        h_graph = global_add_pool(h_list[-1], batch)
+                vn_update = global_add_pool(h_list[-1], batch)
+                vn_update = self.vn_mlp[layer](virtual_node_feat + vn_update)
+                virtual_node_feat = virtual_node_feat + vn_update
+
+        h_graph = torch.cat([global_add_pool(h, batch) for h in h_list], dim=1)
 
         return self.prediction_head(h_graph)

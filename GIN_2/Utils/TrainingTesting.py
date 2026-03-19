@@ -11,30 +11,34 @@ if __package__ in (None, ""):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-from GIN.Utils.GIN import GIN
+from GIN_2.Utils.GIN import GIN
 
 class TrainingTesting(GIN):
     def __init__(self, 
-                 node_in_dim: int, 
-                 edge_in_dim: int, 
-                 hidden_dim: int = 128, 
+                 node_in_dim: int = 26,   # Updated to match the new 26-dim RDKit features
+                 edge_in_dim: int = 6,    # Updated to match 5 bond features + 1 3D distance
+                 hidden_dim: int = 256,   # Increased for higher capacity
                  output_dim: int = 12, 
-                 dropout: float = 0.2,
+                 dropout: float = 0.0,    # Set to 0.0 initially to prevent underfitting
+                 num_layers: int = 7,     # Updated to 7 (Assuming you implemented Jumping Knowledge)
                  learning_rate: float = 3e-4,
-                 weight_decay: float = 5e-4,
+                 weight_decay: float = 1e-5,
                  device: str = "mps",
                  target_mean: torch.Tensor = None,
                  target_std: torch.Tensor = None):
         
-        super().__init__(node_in_dim, edge_in_dim, hidden_dim, output_dim, num_layer=3, dropout=dropout)
+        # Pass the updated hyperparams to the parent GIN class
+        super().__init__(node_in_dim, edge_in_dim, hidden_dim, output_dim, num_layer=num_layers, dropout=dropout)
         
         self.device_name = device
         self.to(self.device_name)
 
-        # Keep normalization stats on the same device for denormalized metrics.
+        # Keep normalization stats on the same device for dynamic normalization.
         if target_mean is not None and target_std is not None:
             self.target_mean = target_mean.detach().clone().float().to(self.device_name)
             self.target_std = target_std.detach().clone().float().to(self.device_name)
+            # Prevent division by zero if a target has 0 variance
+            self.target_std[self.target_std == 0] = 1.0 
         else:
             self.target_mean = None
             self.target_std = None
@@ -51,6 +55,21 @@ class TrainingTesting(GIN):
             self.optimizer, mode='min', factor=0.5, patience=10
         )
 
+    def _get_normalized_targets_and_mask(self, batch):
+        """Helper to dynamically normalize targets and handle missing masks."""
+        y_true = batch.y.float()
+        
+        # 1. Dynamically normalize targets if stats are provided
+        if self.target_mean is not None and self.target_std is not None:
+            y_true_norm = (y_true - self.target_mean) / self.target_std
+        else:
+            y_true_norm = y_true
+            
+        # 2. Fallback for mask (if batch.mask doesn't exist, assume all 1s)
+        mask = getattr(batch, 'mask', torch.ones_like(y_true_norm))
+        
+        return y_true_norm, mask
+
     def train_epoch(self, loader: DataLoader) -> float:
         self.train() 
         total_loss = 0.0
@@ -60,18 +79,16 @@ class TrainingTesting(GIN):
             self.optimizer.zero_grad()
             
             pred = self(batch)
+            y_true_norm, mask = self._get_normalized_targets_and_mask(batch)
             
-            # batch.y is already normalized in preprocessing; optimize in normalized space.
-            mask = batch.mask
-            loss = (self.criterion(pred, batch.y) * mask).sum() / mask.sum()
+            # Calculate masked loss
+            loss = (self.criterion(pred, y_true_norm) * mask).sum() / mask.sum()
 
             if not torch.isfinite(loss):
                 raise RuntimeError("Encountered non-finite training loss. Lower learning rate or inspect data.")
 
             loss.backward()
-            
             torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
-            
             self.optimizer.step()
             total_loss += loss.item()
             
@@ -87,31 +104,32 @@ class TrainingTesting(GIN):
             for batch in loader:
                 batch = batch.to(self.device_name)
                 pred_norm = self(batch)
+                y_true_norm, mask = self._get_normalized_targets_and_mask(batch)
                 
                 preds_list.append(pred_norm.cpu())
-                true_list.append(batch.y.cpu())
-                mask_list.append(batch.mask.cpu())
+                true_list.append(y_true_norm.cpu())
+                mask_list.append(mask.cpu())
                 
         y_pred_norm = torch.cat(preds_list, dim=0)
         y_true_norm = torch.cat(true_list, dim=0)
         y_mask = torch.cat(mask_list, dim=0)
 
-        # Validation optimization metric should stay in normalized space.
+        # Validation optimization metric (Normalized Loss)
         val_loss = ((torch.abs(y_pred_norm - y_true_norm) * y_mask).sum() / y_mask.sum()).item()
 
+        # Denormalize for physical metrics (MAE and R2)
         if self.target_mean is None or self.target_std is None:
-            # Fallback to normalized metrics if denorm stats are unavailable.
-            valid_idx = y_mask == 1
-            y_pred_eval = y_pred_norm[valid_idx].numpy()
-            y_true_eval = y_true_norm[valid_idx].numpy()
+            y_pred_denorm = y_pred_norm
+            y_true_denorm = y_true_norm
         else:
             mean_cpu = self.target_mean.detach().cpu().view(1, -1)
             std_cpu = self.target_std.detach().cpu().view(1, -1)
             y_pred_denorm = y_pred_norm * std_cpu + mean_cpu
             y_true_denorm = y_true_norm * std_cpu + mean_cpu
-            valid_idx = y_mask == 1
-            y_pred_eval = y_pred_denorm[valid_idx].numpy()
-            y_true_eval = y_true_denorm[valid_idx].numpy()
+            
+        valid_idx = y_mask == 1
+        y_pred_eval = y_pred_denorm[valid_idx].numpy()
+        y_true_eval = y_true_denorm[valid_idx].numpy()
         
         return {
             "val_loss": val_loss,
@@ -119,14 +137,8 @@ class TrainingTesting(GIN):
             "r2": r2_score(y_true_eval, y_pred_eval)
         }
 
-    def run_training(self, 
-                     train_loader: DataLoader, 
-                     val_loader: DataLoader, 
-                     epochs: int = 50, 
-                     patience: int = 20):
-        """Full training loop with Early Stopping."""
-        
-            
+    def run_training(self, train_loader: DataLoader, val_loader: DataLoader, epochs: int = 50, patience: int = 20):
+        # ... [Your exact same run_training loop remains unchanged] ...
         best_val_mae = float('inf')
         early_stop_counter = 0
         best_weights = None
@@ -143,10 +155,9 @@ class TrainingTesting(GIN):
             
             print(
                 f"Epoch {epoch:03d} | Train Loss (norm): {loss:.4f} "
-                f"| Val Loss (norm): {val_loss:.4f} | Val MAE (denorm): {val_mae:.4f}"
+                f"| Val Loss (norm): {val_loss:.4f} | Val MAE (denorm): {val_mae:.4f} | Val R2: {metrics['r2']:.4f}"
             )
             
-            # Early Stopping Check
             if val_mae < best_val_mae:
                 best_val_mae = val_mae
                 best_weights = copy.deepcopy(self.state_dict())
@@ -158,7 +169,6 @@ class TrainingTesting(GIN):
                 print(f"Early stopping at epoch {epoch}")
                 break
                 
-        # Restore best model
         if best_weights:
             self.load_state_dict(best_weights)
             print("Restored best model weights.")

@@ -1,61 +1,81 @@
 import argparse
 import os
 import sys
-
+import pandas as pd
 import torch
 from art import *
 
-# Support both `python GIN/manual_run.py` and `python -m GIN.manual_run`.
 if __package__ in (None, ""):
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-from GIN.Utils.paths import Paths
-from GIN.Utils.preprocessing import MolecularPropertyPipeline
-from GIN.Utils.TrainingTesting import TrainingTesting
+from GIN_2.Utils.paths import Paths
+from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
+from GIN_2.Utils.TrainingTesting import TrainingTesting
+
+
+def get_dataset_stats(csv_path: str, target_cols: list) -> tuple:
+    """
+    Calculates the global mean and standard deviation for dynamic normalization.
+    """
+    print(f"Calculating global statistics for {len(target_cols)} targets...")
+    df = pd.read_csv(csv_path, usecols=target_cols)
+    mean_vals = df[target_cols].mean().values
+    std_vals = df[target_cols].std().values
+    
+    target_mean = torch.tensor(mean_vals, dtype=torch.float32)
+    target_std = torch.tensor(std_vals, dtype=torch.float32)
+    print("Global statistics calculated successfully.")
+    
+    return target_mean, target_std
 
 
 class main:
     """
-    main class to manually run the molecular property prediction pipeline.
+    Main class to manually run the molecular property prediction pipeline.
     """
     def __init__(
         self,
-        qm8_path: str,
-        qm9_path: str,
-        use_cache: bool = True,
+        mol_path: str,
+        atom_path: str,
         force_rebuild: bool = False,
-        cache_path: str = None,
         save_path: str = None,
         verbose: bool = True,
-        show_progress: bool = True,
     ):
         self.model = None
-        self.qm8_path = qm8_path
-        self.qm9_path = qm9_path
-
-        self.use_cache = use_cache
+        self.mol_path = mol_path
+        self.atom_path = atom_path
         self.force_rebuild = force_rebuild
-        self.cache_path = cache_path
         self.save_path = save_path or Paths().get_model_path()
         self.verbose = verbose
-        self.show_progress = show_progress
 
+        # NEW: QM9 Target Columns
+        self.TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
+        
+        # NEW: Updated Architecture Hyperparameters
         self.BATCH_SIZE = 64
-        self.HIDDEN_DIM = 128
-        self.OUTPUT_DIM = 12
-        self.DROPOUT = 0.2
+        self.HIDDEN_DIM = 256
+        self.OUTPUT_DIM = len(self.TARGET_COLS)
+        self.DROPOUT = 0.0     # 0.0 for initial training to prevent underfitting
+        self.NUM_LAYERS = 7    # Deep GIN with Jumping Knowledge
         self.LEARNING_RATE = 3e-4
-        self.WEIGHT_DECAY = 5e-4
-        self.EPOCHS = 25
+        self.WEIGHT_DECAY = 1e-5
+        self.EPOCHS = 100      # Increased for proper convergence
         self.PATIENCE = 20
-        self.DEVICE = torch.device("cpu")
+        
+        # Smart device selector
+        if torch.cuda.is_available():
+            self.DEVICE = "cuda"
+        elif torch.backends.mps.is_available():
+            self.DEVICE = "mps"
+        else:
+            self.DEVICE = "cpu"
+            
         self.target_mean = None
         self.target_std = None
-        #torch.device("cuda") if torch.cuda.is_available() else torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
-    def _read_choice(self, prompt: str, valid_choices: tuple[str, ...]) -> str:
+    def _read_choice(self, prompt: str, valid_choices: tuple) -> str:
         """Small helper to keep interactive command handling consistent."""
         while True:
             print(prompt)
@@ -65,47 +85,52 @@ class main:
             print("Invalid input")
 
     def preprocess(self):
-        """Runs preprocessing with optional persistent cache and returns data loaders."""
-        pipeline = MolecularPropertyPipeline(self.qm8_path, self.qm9_path)
-        effective_cache_path = self.cache_path or pipeline._default_cache_path()
+        """Runs preprocessing with persistent cache and returns data loaders."""
+        
+        # 1. Calculate Global Statistics first
+        self.target_mean, self.target_std = get_dataset_stats(self.mol_path, self.TARGET_COLS)
 
-        if self.use_cache:
-            cache_status = "found" if os.path.exists(effective_cache_path) else "not found"
-            print(f"Cache {cache_status}: {effective_cache_path}")
-        else:
-            print("Cache disabled for this run.")
+        # 2. Handle force rebuild (Manually delete the PyG cache file)
+        cache_file = './data/processed/qm_merged_3d_graphs.pt'
+        if self.force_rebuild and os.path.exists(cache_file):
+            print("Force rebuild triggered. Deleting old cache...")
+            os.remove(cache_file)
 
-        self.train_loader, self.val_loader, self.test_loader = pipeline.run_full_pipeline(
-            batch_size=self.BATCH_SIZE,
-            use_cache=self.use_cache,
-            force_rebuild=self.force_rebuild,
-            cache_path=self.cache_path,
-            verbose=self.verbose,
-            show_progress=self.show_progress,
+        # 3. Initialize PyG Pipeline (This automatically handles Dask processing or loading from disk)
+        print("Initializing Relational Geometry Pipeline...")
+        pipeline = RelationalGeometryPipeline(
+            root='./data', 
+            mol_csv_path=self.mol_path, 
+            atom_csv_path=self.atom_path, 
+            target_cols=self.TARGET_COLS
         )
+        
+        # 4. Generate DataLoaders
+        self.train_loader, self.val_loader, self.test_loader = pipeline.get_loaders(batch_size=self.BATCH_SIZE)
 
+        # 5. Dynamically extract node/edge dimensions for the model
         sample_batch = next(iter(self.train_loader))
         self.node_in_dim = sample_batch.num_node_features
         self.edge_in_dim = sample_batch.edge_attr.shape[1]
-        self.target_mean = pipeline.y_mean
-        self.target_std = pipeline.y_std
+        
         tprint("Preprocessing Completed")
 
     def build_model(self):
         """Initializes the TrainingTesting model."""
         self.model = TrainingTesting(
-            node_in_dim=self.node_in_dim,
-            edge_in_dim=self.edge_in_dim,
+            node_in_dim=self.node_in_dim,      # Extracted dynamically (Should be 26)
+            edge_in_dim=self.edge_in_dim,      # Extracted dynamically (Should be 6)
             hidden_dim=self.HIDDEN_DIM,
             output_dim=self.OUTPUT_DIM,
             dropout=self.DROPOUT,
+            num_layers=self.NUM_LAYERS,
             learning_rate=self.LEARNING_RATE,
             weight_decay=self.WEIGHT_DECAY,
             device=self.DEVICE,
             target_mean=self.target_mean,
             target_std=self.target_std,
         )
-        print(f"\nModel initialized with {sum(p.numel() for p in self.model.parameters()):,} parameters.")
+        print(f"\nModel initialized on {self.DEVICE} with {sum(p.numel() for p in self.model.parameters()):,} parameters.")
 
     def run(self):
         """Executes the full training and evaluation process."""
@@ -160,28 +185,23 @@ class main:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Manual GIN training runner")
-    parser.add_argument("--qm8_path", type=str, default=None, help="Path to qm8.csv")
-    parser.add_argument("--qm9_path", type=str, default=None, help="Path to qm9.csv")
-    parser.add_argument("--cache_path", type=str, default=None, help="Optional custom cache file path")
+    # Updated Arguments to match relational dataset structure
+    parser.add_argument("--mol_csv", type=str, default="Dataset/New_QM9/molecule_properties.csv", help="Path to molecules CSV")
+    parser.add_argument("--atom_csv", type=str, default="Dataset/New_QM9/atom_properties.csv", help="Path to atoms CSV")
     parser.add_argument("--save_path", type=str, default=None, help="Optional custom model save path")
-    parser.add_argument("--no_cache", action="store_true", help="Disable persistent preprocessing cache")
     parser.add_argument("--force_rebuild", action="store_true", help="Ignore cache and rebuild preprocessing")
     parser.add_argument("--quiet", action="store_true", help="Reduce preprocessing verbosity")
-    parser.add_argument("--no_progress", action="store_true", help="Disable preprocessing progress bar")
     args = parser.parse_args()
 
-    paths = Paths()
-    qm8 = args.qm8_path or paths.get_qm8_path()
-    qm9 = args.qm9_path or paths.get_qm9_path()
+    # Paths fallback (Update these if your Paths class handles them differently)
+    mol_path = args.mol_csv 
+    atom_path = args.atom_csv 
 
     runner = main(
-        qm8,
-        qm9,
-        use_cache=not args.no_cache,
+        mol_path=mol_path,
+        atom_path=atom_path,
         force_rebuild=args.force_rebuild,
-        cache_path=args.cache_path,
         save_path=args.save_path,
         verbose=not args.quiet,
-        show_progress=not args.no_progress,
     )
     runner.run()
