@@ -66,6 +66,7 @@ class main:
         
         self.TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
         self.cache_version = 2 # Incremented to force rebuild with new logic
+        self.scalers = {}
         
         if torch.cuda.is_available(): self.DEVICE = torch.device("cuda")
         elif torch.backends.mps.is_available(): self.DEVICE = torch.device("mps")
