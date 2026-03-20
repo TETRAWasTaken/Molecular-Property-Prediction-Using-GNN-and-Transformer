@@ -198,6 +198,11 @@ if __name__ == "__main__":
     mol_path = args.mol_csv 
     atom_path = args.atom_csv 
 
+    output_dir = args.save_path
+    if not os.path.exists(output_dir):
+        print(f"Output directory not found at '{output_dir}'. Creating it now...")
+        os.makedirs(output_dir, exist_ok=True)
+
     runner = main(
         mol_path=mol_path,
         atom_path=atom_path,
