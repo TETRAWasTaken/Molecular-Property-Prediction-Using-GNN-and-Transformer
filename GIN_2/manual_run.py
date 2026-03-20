@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import uuid
 import pandas as pd
 import torch
 from art import *
@@ -202,6 +203,9 @@ if __name__ == "__main__":
     if not os.path.exists(output_dir):
         print(f"Output directory not found at '{output_dir}'. Creating it now...")
         os.makedirs(output_dir, exist_ok=True)
+    probe_file = os.path.join(output_dir, f".dir_probe_{uuid.uuid4().hex}")
+    open(probe_file, "a").close()
+    print(f"Directory write probe created: {probe_file}")
 
     runner = main(
         mol_path=mol_path,
