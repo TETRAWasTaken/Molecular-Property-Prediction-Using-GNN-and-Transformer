@@ -190,7 +190,7 @@ if __name__ == "__main__":
     # Updated Arguments to match relational dataset structure
     parser.add_argument("--mol_csv", type=str, default="Dataset/New_QM9/molecule_properties.csv", help="Path to molecules CSV")
     parser.add_argument("--atom_csv", type=str, default="Dataset/New_QM9/atom_properties.csv", help="Path to atoms CSV")
-    parser.add_argument("--save_path", type=str, default="GIN_2/outputs/", help="Optional custom model save path")
+    parser.add_argument("--save_path", type=str, default="GIN_2/outputs/GIN_model.pth", help="Optional custom model save path")
     parser.add_argument("--force_rebuild", action="store_true", help="Ignore cache and rebuild preprocessing")
     parser.add_argument("--quiet", action="store_true", help="Reduce preprocessing verbosity")
     args = parser.parse_args()
