@@ -1,13 +1,8 @@
 import argparse
 import os
 import sys
-from typing import Dict
-import pandas as pd
 import torch
 from art import tprint
-from torch.utils.data import DataLoader, Dataset
-import numpy as np
-from sklearn.preprocessing import StandardScaler
 
 if __package__ in (None, ""):
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,23 +12,6 @@ if __package__ in (None, ""):
 from Transformers_2.Utils.Fine_Tuning import FineTuning
 from Transformers_2.Utils.Tokeniser import Tokeniser
 from Transformers_2.Utils.paths import Paths
-
-class TransformerDataset(Dataset):
-    def __init__(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, labels: torch.Tensor, nan_mask: torch.Tensor):
-        self.input_ids = input_ids
-        self.attention_mask = attention_mask
-        self.labels = labels
-        self.nan_mask = nan_mask
-
-    def __len__(self) -> int: return len(self.input_ids)
-
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        return {
-            "input_ids": self.input_ids[index],
-            "attention_mask": self.attention_mask[index],
-            "labels": self.labels[index],
-            "nan_mask": self.nan_mask[index],
-        }
 
 class main:
     def __init__(
@@ -65,187 +43,37 @@ class main:
         self.MODEL_NAME = "seyonec/ChemBERTa-zinc-base-v1"
         
         self.TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
-        self.cache_version = 2 # Incremented to force rebuild with new logic
         self.scalers = {}
+        self.model = None
+        self.train_loader = None
+        self.val_loader = None
+        self.test_loader = None
+        self.tokeniser = None
         
         if torch.cuda.is_available(): self.DEVICE = torch.device("cuda")
         elif torch.backends.mps.is_available(): self.DEVICE = torch.device("mps")
         else: self.DEVICE = torch.device("cpu")
 
-    def _default_cache_path(self) -> str:
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return os.path.join(project_root, "Transformers_2", "outputs", "cache", "tokenized_qm9_data.pt")
-
-    def _source_signature(self) -> dict:
-        mol_abs = os.path.abspath(self.mol_path)
-        return {
-            "mol_path": mol_abs,
-            "mol_mtime": os.path.getmtime(mol_abs),
-            "max_length": self.MAX_LENGTH,
-            "target_cols": self.TARGET_COLS,
-            "cache_version": self.cache_version,
-        }
-
-    def _load_cache(self, cache_path: str) -> bool:
-        if not os.path.exists(cache_path):
-            return False
-
-        try:
-            try:
-                payload = torch.load(cache_path, map_location="cpu", weights_only=False)
-            except TypeError:
-                payload = torch.load(cache_path, map_location="cpu")
-
-            if payload.get("signature") != self._source_signature():
-                if self.verbose:
-                    print(f"Cache found at {cache_path}, but inputs changed. Rebuilding preprocessing...")
-                return False
-
-            if self.verbose:
-                print(f"Loaded tokenized dataset cache from: {cache_path}")
-
-            self._build_dataloaders_from_payload(payload)
-            return True
-        except Exception as exc:
-            if self.verbose:
-                print(f"Failed to load cache ({exc}). Rebuilding preprocessing...")
-            return False
-
-    def _save_cache(self, cache_path: str, payload: dict):
-        cache_dir = os.path.dirname(cache_path)
-        if cache_dir:
-            os.makedirs(cache_dir, exist_ok=True)
-        torch.save(payload, cache_path)
-        if self.verbose:
-            print(f"Saved preprocessing cache to: {cache_path}")
-
-    def _split_indices(self, dataset_size: int) -> Dict[str, list[int]]:
-        if dataset_size < 3:
-            raise ValueError("Need at least 3 valid molecules to create train/val/test splits.")
-
-        generator = torch.Generator().manual_seed(self.SEED)
-        indices = torch.randperm(dataset_size, generator=generator).tolist()
-
-        train_end = max(1, int(dataset_size * 0.8))
-        val_end = max(train_end + 1, int(dataset_size * 0.9))
-        val_end = min(val_end, dataset_size - 1)
-
-        split_indices = {
-            "train": indices[:train_end],
-            "val": indices[train_end:val_end],
-            "test": indices[val_end:],
-        }
-
-        if not split_indices["val"] or not split_indices["test"]:
-            raise ValueError(
-                "Unable to create non-empty train/val/test splits from the preprocessed dataset."
-            )
-
-        return split_indices
-
-    def _slice_tensor_dict(self, tensor_dict: dict, indices: list[int]) -> dict:
-        index_tensor = torch.tensor(indices, dtype=torch.long)
-        return {key: value.index_select(0, index_tensor) for key, value in tensor_dict.items()}
-
-    def _make_loader(self, tensor_dict: dict, shuffle: bool) -> DataLoader:
-        dataset = TransformerDataset(
-            input_ids=tensor_dict["input_ids"],
-            attention_mask=tensor_dict["attention_mask"],
-            labels=tensor_dict["labels"],
-            nan_mask=tensor_dict["nan_mask"],
-        )
-        return DataLoader(dataset, batch_size=self.BATCH_SIZE, shuffle=shuffle)
-
-    def _build_dataloaders_from_payload(self, payload: dict):
-        tensor_dict = {
-            "input_ids": payload["input_ids"],
-            "attention_mask": payload["attention_mask"],
-            "labels": payload["labels"],
-            "nan_mask": payload["nan_mask"],
-        }
-        split_indices = payload["split_indices"]
-
-        self.train_loader = self._make_loader(
-            self._slice_tensor_dict(tensor_dict, split_indices["train"]),
-            shuffle=True,
-        )
-        self.val_loader = self._make_loader(
-            self._slice_tensor_dict(tensor_dict, split_indices["val"]),
-            shuffle=False,
-        )
-        self.test_loader = self._make_loader(
-            self._slice_tensor_dict(tensor_dict, split_indices["test"]),
-            shuffle=False,
-        )
-
-        if self.verbose:
-            print(
-                f"Train samples: {len(split_indices['train'])} | "
-                f"Val samples: {len(split_indices['val'])} | "
-                f"Test samples: {len(split_indices['test'])}"
-            )
-
     def preprocess(self):
-        effective_cache_path = self.cache_path or self._default_cache_path()
-
-        if self.use_cache and not self.force_rebuild and self._load_cache(effective_cache_path):
-            tprint("Preprocessing Completed")
-            return
-
-        # Initialize and run Dask-powered Tokeniser
         self.tokeniser = Tokeniser(
             mol_path=self.mol_path,
             model_name=self.MODEL_NAME,
             max_length=self.MAX_LENGTH,
+            batch_size=self.BATCH_SIZE,
+            target_cols=self.TARGET_COLS,
+            use_cache=self.use_cache,
+            force_rebuild=self.force_rebuild,
+            cache_path=self.cache_path,
+            seed=self.SEED,
+            verbose=self.verbose,
         )
-        self.tokeniser.load_data(verbose=self.verbose)
-        self.tokeniser.canonicalize_smiles(verbose=self.verbose)
-        
-        df_target = self.tokeniser.df
 
-        if self.verbose: print("Scaling targets dynamically...")
-        
-        self.scalers = {} 
-        raw_targets = df_target[self.TARGET_COLS].values
-        scaled_targets = np.copy(raw_targets)
-
-        for i, col_name in enumerate(self.TARGET_COLS):
-            col_data = raw_targets[:, i]
-            mask = ~np.isnan(col_data)
-            if mask.any():
-                scaler = StandardScaler()
-                scaled_targets[mask, i] = scaler.fit_transform(col_data[mask].reshape(-1, 1)).flatten()
-                self.scalers[col_name] = scaler
-        
-        scaled_targets = np.nan_to_num(scaled_targets, nan=0.0)
-        labels = torch.tensor(scaled_targets, dtype=torch.float32)
-
-        nan_mask = torch.tensor(
-            df_target[self.TARGET_COLS].notna().astype(int).values, dtype=torch.float32
-        )
-        smiles_list = df_target["smiles"].astype(str).tolist()
-
-        if self.verbose:
-            print(f"Tokenizing {len(smiles_list)} molecules natively via Hugging Face...")
-
-        # Let the Rust tokenizer handle the entire list at once
-        token_dict = self.tokeniser.encode_smiles_list(smiles_list)
-        
-        payload = {
-            "input_ids": token_dict["input_ids"],
-            "attention_mask": token_dict["attention_mask"],
-            "labels": labels,
-            "nan_mask": nan_mask,
-            "split_indices": self._split_indices(len(smiles_list)),
-            "signature": self._source_signature(),
-        }
-
-        self._build_dataloaders_from_payload(payload)
-
-        if self.use_cache:
-            self._save_cache(effective_cache_path, payload)
-
-        tprint("Preprocessing Completed")
+        artifacts = self.tokeniser.run_tokenizer(verbose=self.verbose)
+        self.train_loader = artifacts["train_loader"]
+        self.val_loader = artifacts["val_loader"]
+        self.test_loader = artifacts["test_loader"]
+        self.scalers = artifacts["scalers"]
+        self.TARGET_COLS = artifacts["target_cols"]
 
     def build_model(self):
         """Initialize the ChemBERTa fine-tuning model."""
