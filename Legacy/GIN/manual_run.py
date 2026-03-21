@@ -11,9 +11,9 @@ if __package__ in (None, ""):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-from GIN.Utils.paths import Paths
-from GIN.Utils.preprocessing import MolecularPropertyPipeline
-from GIN.Utils.TrainingTesting import TrainingTesting
+from Legacy.GIN.Utils.paths import Paths
+from Legacy.GIN.Utils.preprocessing import MolecularPropertyPipeline
+from Legacy.GIN.Utils.TrainingTesting import TrainingTesting
 
 
 class main:

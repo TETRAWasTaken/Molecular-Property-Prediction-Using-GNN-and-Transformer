@@ -2,7 +2,6 @@ import os
 import sys
 import warnings
 import torch
-from rdkit import Chem
 
 if __package__ in (None, ""):
     project_root = os.path.dirname(
@@ -11,10 +10,10 @@ if __package__ in (None, ""):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-from GIN.Utils.TrainingTesting import TrainingTesting
-from GIN.Utils.preprocessing import MolecularPropertyPipeline
-from GIN.Utils.paths import Paths
-from GIN.Evaluation.preprocessing import bundle_dataset, all_files
+from Legacy.GIN.Utils.TrainingTesting import TrainingTesting
+from Legacy.GIN.Utils.preprocessing import MolecularPropertyPipeline
+from Legacy.GIN.Utils.paths import Paths
+from Legacy.GIN.Evaluation.preprocessing import bundle_dataset, all_files
 
 def main():
     paths = Paths()

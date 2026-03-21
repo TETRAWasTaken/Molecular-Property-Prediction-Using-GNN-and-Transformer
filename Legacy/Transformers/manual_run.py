@@ -15,9 +15,9 @@ if __package__ in (None, ""):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-from Transformers.Utils.Fine_Tuning import FineTuning
-from Transformers.Utils.Tokeniser import Tokeniser
-from Transformers.Utils.paths import Paths
+from Legacy.Transformers.Utils.Fine_Tuning import FineTuning
+from Legacy.Transformers.Utils.Tokeniser import Tokeniser
+from Legacy.Transformers.Utils.paths import Paths
 
 def _looks_like_git_lfs_pointer(file_path: str) -> bool:
     """Detect Git LFS pointer files so preprocessing fails with a useful message."""

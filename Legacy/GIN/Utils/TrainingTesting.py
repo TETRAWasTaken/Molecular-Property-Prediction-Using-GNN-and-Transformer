@@ -11,7 +11,7 @@ if __package__ in (None, ""):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-from GIN.Utils.GIN import GIN
+from Legacy.GIN.Utils.GIN import GIN
 
 class TrainingTesting(GIN):
     def __init__(self, 
