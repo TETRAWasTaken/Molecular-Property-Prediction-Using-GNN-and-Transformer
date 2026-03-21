@@ -317,6 +317,7 @@ class Tokeniser:
             "attention_mask": token_dict["attention_mask"],
             "labels": labels,
             "nan_mask": nan_mask,
+            "mol_ids": df_target["molecule_id"].tolist(),
             "split_indices": self._split_indices(len(smiles_list)),
             "scalers": self.scalers,
             "signature": self._source_signature(),

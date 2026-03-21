@@ -57,6 +57,7 @@ def process_merged_3d_graph(row: pd.Series, target_cols: List[str]) -> Data:
     Worker function: Converts a merged row into a 3D PyG Data object.
     Uses True DFT coordinates and strictly validates atom ordering.
     """
+    mol_id = row['molecule_id']
     smiles = row['smiles']
     targets = row[target_cols].values.astype(np.float32)
     
@@ -122,7 +123,7 @@ def process_merged_3d_graph(row: pd.Series, target_cols: List[str]) -> Data:
     edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
     y = torch.from_numpy(targets).view(1, -1)
 
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=pos, y=y)
+    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=pos, y=y, mol_id=mol_id)
 
 # ==========================================
 # 3. Dask Pipeline Manager
