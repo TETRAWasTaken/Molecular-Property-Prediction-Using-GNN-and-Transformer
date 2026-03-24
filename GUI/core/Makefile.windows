@@ -1,0 +1,25 @@
+CC := x86_64-w64-mingw32-gcc
+SRC := inference.c
+OUT_DLL := hybrid_engine.dll
+OUT_IMPLIB := libhybrid_engine.dll.a
+
+# Set this to your extracted ONNX Runtime Windows package root.
+# Example: ../assets/onnxruntime-win-x64-1.24.4
+ORT_ROOT ?= ../assets/onnxruntime-win-x64-1.24.4
+ORT_INC := $(ORT_ROOT)/include
+ORT_LIB := $(ORT_ROOT)/lib
+
+CFLAGS := -O2 -I$(ORT_INC)
+LDFLAGS := -shared -L$(ORT_LIB) -lonnxruntime -Wl,--out-implib,$(OUT_IMPLIB)
+
+.PHONY: all build clean
+
+all: build
+
+build: $(OUT_DLL)
+
+$(OUT_DLL): $(SRC)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+clean:
+	rm -f $(OUT_DLL) $(OUT_IMPLIB)
