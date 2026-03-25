@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QMainWindow, QStackedWidget
 from PySide6.QtCore import QEasingCurve
+from PySide6.QtGui import QIcon
 
 from gui.page_input import InputPage
 from gui.page_result import ResultsPage
@@ -9,7 +10,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Hybrid Quantum Screener")
-        self.resize(1100, 700) # Good default desktop size
+        self.resize(1200, 750)
+        
+        # Center window on screen
+        screen = self.screen()
+        geometry = self.frameGeometry()
+        center = screen.availableGeometry().center()
+        geometry.moveCenter(center)
+        self.move(geometry.topLeft())
 
         # The Stacked Widget manages multiple pages
         self.stack = QStackedWidget()
@@ -40,8 +48,8 @@ class MainWindow(QMainWindow):
 
         self.anim_result = Animation(target=self,
                               property_name=b"windowOpacity",
-                              duration=250, start_value=0.88, end_value=1.0,
-                              easing_curve=QEasingCurve.InOutQuad)
+                              duration=300, start_value=0.85, end_value=1.0,
+                              easing_curve=QEasingCurve.OutQuad)
         self.anim_result.animation.start()
 
     def show_input(self):
@@ -49,6 +57,6 @@ class MainWindow(QMainWindow):
 
         self.anim_input = Animation(target=self,
                               property_name=b"windowOpacity",
-                              duration=250, start_value=0.88, end_value=1.0,
-                              easing_curve=QEasingCurve.InOutQuad)
+                              duration=300, start_value=0.85, end_value=1.0,
+                              easing_curve=QEasingCurve.OutQuad)
         self.anim_input.animation.start()
