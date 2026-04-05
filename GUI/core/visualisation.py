@@ -69,7 +69,7 @@ def generate_3d_molecule_html(smiles: str) -> str:
         mode='lines',
         line=dict(color='#A0A0A0', width=4),
         hoverinfo='none',
-        showlegend=False
+        showlegend=True
     ))
 
     # Add Atoms
@@ -79,7 +79,7 @@ def generate_3d_molecule_html(smiles: str) -> str:
         marker=dict(size=12, color=atom_colors, line=dict(width=1, color='#000000')),
         text=hover_texts,
         hoverinfo='text',
-        showlegend=False
+        showlegend=True
     ))
 
     # Apply Dark Mode Styling
@@ -90,7 +90,17 @@ def generate_3d_molecule_html(smiles: str) -> str:
             xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False),
             bgcolor="#1e1e1e"
         ),
-        margin=dict(l=0, r=0, t=0, b=0)
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend=dict(
+            x=0.01,
+            y=0.99,
+            xanchor='left',
+            yanchor='top',
+            bgcolor='rgba(26,28,43,0.75)',
+            bordercolor='#3A3F49',
+            borderwidth=1,
+            font=dict(color="#F2F4F8", size=11)
+        )
     )
 
     html = fig.to_html(include_plotlyjs='cdn', full_html=True)

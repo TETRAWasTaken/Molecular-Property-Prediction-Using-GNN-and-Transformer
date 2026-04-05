@@ -12,7 +12,7 @@ class InputPage(QWidget):
     This class represents the input page of the GUI, where users can input parameters for the simulation.
     """
 
-    run_screening_signal = Signal()
+    run_screening_signal = Signal(object)
 
 
     def __init__(self):
@@ -20,6 +20,21 @@ class InputPage(QWidget):
 
         self.properties = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2',
                            'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
+        self.default_property_ranges = {
+            'mu': (-1.686439, 3.281758),
+            'alpha': (-2.641577, 2.431582),
+            'homo': (-2.951540, 5.050764),
+            'lumo': (-2.430256, 3.764272),
+            'gap': (-1.959863, 2.107400),
+            'r2': (-1.829311, 3.721191),
+            'zpve': (-2.553265, 2.277082),
+            'u0': (-3.888944, 2.122974),
+            'u298': (-3.884573, 2.118524),
+            'h298': (-3.886974, 2.121083),
+            'g298': (-3.888423, 2.122296),
+            'cv': (-2.001001, 2.176433),
+        }
+        self.uploaded_csv_path = None
     
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(16, 16, 16, 16)
@@ -72,8 +87,9 @@ class InputPage(QWidget):
             max_box = QDoubleSpinBox()
             min_box.setRange(-1000, 1000)
             max_box.setRange(-1000, 1000)
-            min_box.setValue(100)
-            max_box.setValue(100)
+            default_min, default_max = self.default_property_ranges.get(prop, (100, 100))
+            min_box.setValue(default_min)
+            max_box.setValue(default_max)
             min_box.setMinimumHeight(32)
             max_box.setMinimumHeight(32)
 
@@ -151,12 +167,35 @@ class InputPage(QWidget):
     def upload_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Select SMILES CSV", "", "CSV Files (*.csv)")
         if file_name:
+            self.uploaded_csv_path = file_name
             short_name = file_name.split("/")[-1]
             self.lbl_file.setText(f"✓ Selected: {short_name}")
             self.lbl_file.setStyleSheet("color: #10b981; font-style: normal; font-weight: 500; font-size: 12px; margin-top: 4px;")
 
-    def _emit_run(self):
-        self.run_screening_signal.emit()
+    def _emit_run(self, payload):
+        self.run_screening_signal.emit(payload)
+
+    def _parse_manual_smiles(self):
+        raw_text = self.text_input.toPlainText().strip()
+        if not raw_text:
+            return []
+        normalized = raw_text.replace("\n", ",")
+        return [token.strip() for token in normalized.split(",") if token.strip()]
+
+    def _collect_property_ranges(self):
+        ranges = {}
+        for prop in self.properties:
+            min_val = self.spinboxes[prop]['min'].value()
+            max_val = self.spinboxes[prop]['max'].value()
+            low = min(min_val, max_val)
+            high = max(min_val, max_val)
+            ranges[prop] = (low, high)
+        return ranges
 
     def run_screening(self):
-        self._emit_run()
+        payload = {
+            "csv_path": self.uploaded_csv_path,
+            "manual_smiles": self._parse_manual_smiles(),
+            "property_ranges": self._collect_property_ranges(),
+        }
+        self._emit_run(payload)

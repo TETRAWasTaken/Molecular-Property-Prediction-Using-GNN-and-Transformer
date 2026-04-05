@@ -7,7 +7,7 @@ class MoleculeInspectorDialog(QDialog):
     def __init__(self, smiles: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"3D Inspector: {smiles}")
-        self.resize(700, 700)
+        self.resize(700, 500)
         
         # Apply dark mode styling to the window
         self.setStyleSheet("""
@@ -20,8 +20,8 @@ class MoleculeInspectorDialog(QDialog):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
 
         # Title label
         title = QLabel(f"Molecular Structure: {smiles}")
@@ -29,6 +29,7 @@ class MoleculeInspectorDialog(QDialog):
         title_font.setPointSize(13)
         title_font.setWeight(QFont.Weight.Bold)
         title.setFont(title_font)
+        title.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(title)
 
         # Generate HTML and load it into the WebEngine
@@ -36,4 +37,4 @@ class MoleculeInspectorDialog(QDialog):
         html_content = generate_3d_molecule_html(smiles)
         self.browser.setHtml(html_content)
         
-        layout.addWidget(self.browser)
+        layout.addWidget(self.browser, stretch=2)

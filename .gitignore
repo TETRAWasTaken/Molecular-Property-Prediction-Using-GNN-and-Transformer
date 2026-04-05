@@ -14,6 +14,7 @@ __pycache__/
 *.dylib
 *.so
 *.dll
+*.onnx
 GUI/assets/onnxruntime-osx-arm64-1.24.4/GIT_COMMIT_ID
 GUI/assets/onnxruntime-osx-arm64-1.24.4/LICENSE
 GUI/assets/onnxruntime-osx-arm64-1.24.4/Privacy.md

@@ -8,12 +8,13 @@ if "--disable-skia-graphite" not in existing_flags:
         f"{existing_flags} --disable-skia-graphite".strip()
     )
 
-from PySide6.QtWidgets import QApplication, QSplashScreen, QMainWindow
+from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtMultimediaWidgets import QVideoWidget
 from gui.main_window import MainWindow
-from PySide6.QtGui import QFontDatabase, QPixmap, Qt
-from PySide6.QtCore import QThread
-import time
-from core.inference import InferenceThread
+from PySide6.QtGui import QFontDatabase, Qt
+from PySide6.QtCore import QThread, QTimer, QUrl
+from core.inference import EngineWarmupThread
 
 stylesheet = """
 /* Main Application */
@@ -189,6 +190,52 @@ QScrollBar::handle:horizontal:hover {
 }
 """
 
+class VideoSplashScreen(QDialog):
+    """A video splash screen that plays a video file during app startup."""
+    def __init__(self, video_path: Path, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setModal(False)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.resize(960, 540)
+        
+        # Center on screen
+        screen = QApplication.primaryScreen()
+        geo = self.frameGeometry()
+        center = screen.availableGeometry().center()
+        geo.moveCenter(center)
+        self.move(geo.topLeft())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.video_widget = QVideoWidget()
+        layout.addWidget(self.video_widget)
+
+        self.player = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.audio.setVolume(0.0)  # Mute splash video
+        self.player.setAudioOutput(self.audio)
+        self.player.setVideoOutput(self.video_widget)
+        self.player.setSource(QUrl.fromLocalFile(str(video_path)))
+        self.player.mediaStatusChanged.connect(self._on_media_status_changed)
+
+    def _on_media_status_changed(self, status):
+        """Auto-loop video or handle end of playback."""
+        if status == QMediaPlayer.EndOfMedia:
+            self.player.setPosition(0)
+            self.player.play()
+
+    def start(self):
+        """Show the splash and start video playback."""
+        self.show()
+        self.player.play()
+
+    def stop(self):
+        """Stop video and close splash."""
+        self.player.stop()
+        self.close()
+
 if __name__ == "__main__":
 
     app = QApplication(sys.argv)
@@ -202,17 +249,44 @@ if __name__ == "__main__":
         families = QFontDatabase.applicationFontFamilies(font_id)
         print(f"[Font] Loaded: {font_path} -> {families}")
     
-    pixmap = QPixmap("/Users/anshumaansoni/Downloads/ACTION.png")
-    splash = QSplashScreen(pixmap, Qt.WindowStaysOnTopHint)
-    splash.show()
+    # Load video splash screen
+    video_splash_path = Path("/Users/anshumaansoni/Downloads/Splash.mp4")
+    video_splash = None
+    
+    if video_splash_path.exists():
+        video_splash = VideoSplashScreen(video_splash_path)
+        video_splash.start()
+        print(f"[Splash] Video loaded: {video_splash_path}")
+    else:
+        print(f"[Splash] Video not found: {video_splash_path}")
+
+    # Warm up ONNX Runtime engine in parallel while the app is launching.
+    engine_warmup_thread = EngineWarmupThread()
+
+    def _on_engine_ready(model_path):
+        print(f"[Engine] Warm-up complete: {model_path}")
+
+    def _on_engine_error(message):
+        print(f"[Engine] Warm-up failed: {message}")
+
+    engine_warmup_thread.ready.connect(_on_engine_ready)
+    engine_warmup_thread.error.connect(_on_engine_error)
+    engine_warmup_thread.start()
 
     app.processEvents()  # Ensure the splash screen is displayed immediately
-    time.sleep(2)
-    
-    app.setStyle("Fusion") 
-    
+
+    app.setStyle("Fusion")
+
     window = MainWindow()
-    window.show()
-    
-    splash.finish(window)
+    window.resize(1920, 1080)
+    window.setWindowTitle("Molecular Property Prediction and Recommendation")
+    window.engine_warmup_thread = engine_warmup_thread
+
+    def _show_main_window():
+        window.show()
+        if video_splash is not None:
+            video_splash.stop()
+
+    # Do not block with sleep; let event loop paint splash, then open main window.
+    QTimer.singleShot(8000, _show_main_window)
     sys.exit(app.exec())
