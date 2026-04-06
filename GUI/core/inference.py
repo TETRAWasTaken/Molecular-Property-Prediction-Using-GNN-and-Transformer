@@ -6,9 +6,10 @@ from pathlib import Path
 import numpy as np
 from typing import Optional
 from PySide6.QtCore import Signal, QThread
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModel
 from rdkit import Chem
 from rdkit.Chem import AllChem
+import torch
 
 # Load platform-specific shared library produced by Makefile/Makefile.windows.
 _LIB_DIR = Path(__file__).resolve().parent
@@ -44,12 +45,13 @@ engine_lib.cleanup_engine.restype = None
 
 
 _TOKENIZER = None
-_TOKENIZER_MODEL = 'seyonec/ChemBERTa-zinc-base-v1'
 _MAX_SEQ_LEN = 64
 _DEFAULT_OUTPUT_DIM = 12
 _ENGINE_READY = False
 _ENGINE_MODEL_PATH = None
 _CONFIDENCE_CALIBRATION_CACHE = None
+_TRANSFORMER_MODEL = None
+_EXPLAINABILITY_MODEL_PATH = None
 
 def _one_hot_encoding(x, allowable_set):
 	if x not in allowable_set:
@@ -443,8 +445,197 @@ class EngineWarmupThread(QThread):
 def _get_tokenizer():
 	global _TOKENIZER
 	if _TOKENIZER is None:
-		_TOKENIZER = AutoTokenizer.from_pretrained(_TOKENIZER_MODEL)
+		model_path = _resolve_explainability_model_path()
+		_TOKENIZER = AutoTokenizer.from_pretrained(
+			str(model_path),
+			local_files_only=True,
+		)
 	return _TOKENIZER
+
+
+def _get_transformer_model():
+	global _TRANSFORMER_MODEL
+	if _TRANSFORMER_MODEL is None:
+		model_path = _resolve_explainability_model_path()
+		_TRANSFORMER_MODEL = AutoModel.from_pretrained(
+			str(model_path),
+			local_files_only=True,
+		)
+		_TRANSFORMER_MODEL.eval()
+	return _TRANSFORMER_MODEL
+
+
+def _looks_like_hf_model_dir(path_obj):
+	if not path_obj.is_dir():
+		return False
+	has_config = (path_obj / 'config.json').exists()
+	has_weights = (
+		(path_obj / 'model.safetensors').exists()
+		or (path_obj / 'pytorch_model.bin').exists()
+		or (path_obj / 'tf_model.h5').exists()
+	)
+	has_tokenizer = (
+		(path_obj / 'tokenizer.json').exists()
+		or (path_obj / 'tokenizer_config.json').exists()
+		or (path_obj / 'vocab.json').exists()
+	)
+	return has_config and has_weights and has_tokenizer
+
+
+def _resolve_explainability_model_path():
+	global _EXPLAINABILITY_MODEL_PATH
+	if _EXPLAINABILITY_MODEL_PATH is not None:
+		return _EXPLAINABILITY_MODEL_PATH
+
+	env_path = os.environ.get('HYBRID_ATTENTION_MODEL_PATH', '').strip()
+	if env_path:
+		candidate = Path(env_path).expanduser().resolve()
+		if _looks_like_hf_model_dir(candidate):
+			_EXPLAINABILITY_MODEL_PATH = candidate
+			return _EXPLAINABILITY_MODEL_PATH
+		raise FileNotFoundError(
+			f"HYBRID_ATTENTION_MODEL_PATH is set but not a valid Hugging Face model directory: {candidate}"
+		)
+
+	assets_dir = _LIB_DIR.parent / 'assets'
+	candidate_dirs = [
+		assets_dir / 'fine_tuned_transformer',
+		assets_dir / 'transformer_finetuned',
+		assets_dir / 'chemberta_finetuned',
+		assets_dir / 'transformer',
+	]
+
+	for candidate in candidate_dirs:
+		if _looks_like_hf_model_dir(candidate):
+			_EXPLAINABILITY_MODEL_PATH = candidate.resolve()
+			return _EXPLAINABILITY_MODEL_PATH
+
+	raise FileNotFoundError(
+		"Attention model not found in GUI/assets. "
+		"Place a fine-tuned Hugging Face model folder at one of: "
+		"GUI/assets/fine_tuned_transformer, GUI/assets/transformer_finetuned, "
+		"GUI/assets/chemberta_finetuned, GUI/assets/transformer; "
+		"or set HYBRID_ATTENTION_MODEL_PATH to that folder. "
+		"The app will continue to work without attention visualization."
+	)
+
+
+def _extract_atom_spans(smiles):
+	spans = []
+	i = 0
+	organic_subset = set('BCNOPSFIbcnops')
+	while i < len(smiles):
+		ch = smiles[i]
+		if ch == '[':
+			j = smiles.find(']', i + 1)
+			if j == -1:
+				break
+			spans.append((i, j + 1))
+			i = j + 1
+			continue
+		if i + 1 < len(smiles):
+			two = smiles[i:i + 2]
+			if two in ('Br', 'Cl'):
+				spans.append((i, i + 2))
+				i += 2
+				continue
+		if ch in organic_subset:
+			spans.append((i, i + 1))
+		i += 1
+	return spans
+
+
+def _score_overlap(span_a, span_b):
+	left = max(span_a[0], span_b[0])
+	right = min(span_a[1], span_b[1])
+	return max(0, right - left)
+
+
+def compute_transformer_explainability(smiles):
+	"""Return atom and bond attention scores derived from transformer self-attention."""
+	smiles = (smiles or '').strip()
+	if not smiles:
+		raise ValueError('SMILES is empty')
+
+	mol = Chem.MolFromSmiles(smiles)
+	if mol is None:
+		raise ValueError(f'Invalid SMILES: {smiles}')
+
+	tokenizer = _get_tokenizer()
+	model = _get_transformer_model()
+
+	encoded = tokenizer(
+		smiles,
+		return_tensors='pt',
+		truncation=True,
+		max_length=_MAX_SEQ_LEN,
+		return_offsets_mapping=True,
+	)
+	offsets = encoded.pop('offset_mapping')[0].tolist()
+
+	with torch.no_grad():
+		outputs = model(**encoded, output_attentions=True)
+
+	attentions = outputs.attentions
+	if not attentions:
+		raise RuntimeError('Transformer did not return attention tensors')
+
+	# [layers, heads, seq, seq] -> [seq, seq]
+	stack = torch.stack(attentions, dim=0)[:, 0, :, :, :]
+	attn_matrix = stack.mean(dim=(0, 1)).cpu().numpy()
+	seq_len = attn_matrix.shape[0]
+
+	# Blend CLS->token and token->CLS as a stable token saliency signal.
+	token_scores = (attn_matrix[0, :] + attn_matrix[:, 0]) * 0.5
+
+	atom_spans = _extract_atom_spans(smiles)
+	n_atoms = mol.GetNumAtoms()
+	atom_scores = np.zeros((n_atoms,), dtype=np.float32)
+	atom_hits = np.zeros((n_atoms,), dtype=np.float32)
+
+	n_atoms_to_map = min(n_atoms, len(atom_spans))
+	for token_idx in range(seq_len):
+		if token_idx >= len(offsets):
+			break
+		start, end = offsets[token_idx]
+		if end <= start:
+			continue
+		token_span = (int(start), int(end))
+		best_atom = -1
+		best_overlap = 0
+		for atom_idx in range(n_atoms_to_map):
+			overlap = _score_overlap(token_span, atom_spans[atom_idx])
+			if overlap > best_overlap:
+				best_overlap = overlap
+				best_atom = atom_idx
+		if best_atom >= 0:
+			score = float(token_scores[token_idx])
+			atom_scores[best_atom] += score
+			atom_hits[best_atom] += 1.0
+
+	for atom_idx in range(n_atoms):
+		if atom_hits[atom_idx] > 0:
+			atom_scores[atom_idx] /= atom_hits[atom_idx]
+
+	max_score = float(np.max(atom_scores)) if atom_scores.size else 0.0
+	if max_score > 1e-8:
+		atom_scores = atom_scores / max_score
+
+	bond_scores = []
+	for bond in mol.GetBonds():
+		i = bond.GetBeginAtomIdx()
+		j = bond.GetEndAtomIdx()
+		score = float((atom_scores[i] + atom_scores[j]) * 0.5)
+		bond_scores.append({
+			'begin': int(i),
+			'end': int(j),
+			'score': score,
+		})
+
+	return {
+		'atom_scores': atom_scores.astype(np.float32).tolist(),
+		'bond_scores': bond_scores,
+	}
 
 
 def _encode_smiles(smiles):

@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 from art import tprint
 import numpy as np
 from sklearn.preprocessing import StandardScaler
+from .paths import Paths
 
 
 class Tokeniser:
@@ -85,10 +86,10 @@ class Tokeniser:
         self.train_loader: Optional[DataLoader] = None
         self.val_loader: Optional[DataLoader] = None
         self.test_loader: Optional[DataLoader] = None
+        self.last_payload: Optional[dict] = None
 
     def _default_cache_path(self) -> str:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return os.path.join(base_dir, "outputs", "cache", "tokenized_dataset.pt")
+        return Paths().get_tokenized_dataset_path()
 
     def _source_signature(self) -> dict:
         mol_abs = os.path.abspath(self.mol_path)
@@ -322,6 +323,7 @@ class Tokeniser:
             "scalers": self.scalers,
             "signature": self._source_signature(),
         }
+        self.last_payload = payload
 
         self._build_dataloaders_from_payload(payload)
 

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QColor, QFont
 from gui.page_visualisation import MoleculeInspectorDialog
+from core.inference import compute_transformer_explainability
 
 class ResultsPage(QWidget):
     # Signal to tell the main window to switch back to the input page
@@ -157,7 +158,17 @@ class ResultsPage(QWidget):
             smiles = smiles_item.text()
             print(f"Double-clicked on SMILES: {smiles}")
 
-            self.inspector = MoleculeInspectorDialog(smiles)
+            explainability = {}
+            try:
+                explainability = compute_transformer_explainability(smiles)
+            except Exception as exc:
+                QMessageBox.information(
+                    self,
+                    "Attention Map Unavailable",
+                    f"Could not compute transformer attention map for this molecule.\n\n{exc}",
+                )
+
+            self.inspector = MoleculeInspectorDialog(smiles, explainability=explainability)
             self.inspector.exec_()
 
     def import_from_csv(self, file_path):

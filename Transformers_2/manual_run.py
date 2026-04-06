@@ -1,6 +1,9 @@
 import argparse
+import csv
+import json
 import os
 import sys
+from pathlib import Path
 import torch
 from art import tprint
 
@@ -32,7 +35,10 @@ class main:
         self.use_cache = use_cache
         self.force_rebuild = force_rebuild
         self.cache_path = cache_path
-        self.save_path = save_path or Paths().get_model_path()
+        self.paths = Paths()
+        self.output_dir = self.paths.get_output_dir()
+        self.artifacts_dir = self.paths.get_artifacts_dir()
+        self.save_path = save_path or self.paths.get_model_path()
         self.verbose = verbose
 
         self.BATCH_SIZE = batch_size
@@ -49,6 +55,7 @@ class main:
         self.val_loader = None
         self.test_loader = None
         self.tokeniser = None
+        self.tokenizer_outputs = None
         
         if torch.cuda.is_available(): self.DEVICE = torch.device("cuda")
         elif torch.backends.mps.is_available(): self.DEVICE = torch.device("mps")
@@ -74,6 +81,14 @@ class main:
         self.test_loader = artifacts["test_loader"]
         self.scalers = artifacts["scalers"]
         self.TARGET_COLS = artifacts["target_cols"]
+        self.tokenizer_outputs = getattr(self.tokeniser, "last_payload", None)
+
+        os.makedirs(self.artifacts_dir, exist_ok=True)
+        if self.tokenizer_outputs is not None:
+            tokenizer_bundle_path = os.path.join(self.artifacts_dir, "tokenizer_outputs.pt")
+            torch.save(self.tokenizer_outputs, tokenizer_bundle_path)
+            if self.verbose:
+                print(f"Saved tokenizer outputs to: {tokenizer_bundle_path}")
 
     def build_model(self):
         """Initialize the ChemBERTa fine-tuning model."""
@@ -117,6 +132,11 @@ class main:
 
         total_loss = 0.0
         batch_count = 0
+        saved_input_ids = []
+        saved_attention_masks = []
+        saved_labels = []
+        saved_nan_masks = []
+        saved_predictions = []
         
         # Trackers for column-wise loss
         num_targets = len(self.TARGET_COLS)
@@ -131,6 +151,11 @@ class main:
                 nan_mask = batch["nan_mask"].to(self.DEVICE)
 
                 predictions = self.model(input_ids, attention_mask)
+                saved_input_ids.append(input_ids.detach().cpu())
+                saved_attention_masks.append(attention_mask.detach().cpu())
+                saved_labels.append(labels.detach().cpu())
+                saved_nan_masks.append(nan_mask.detach().cpu())
+                saved_predictions.append(predictions.detach().cpu())
                 
                 # Overall loss (your original code)
                 loss = self.model.masked_mse_loss(predictions, labels, nan_mask)
@@ -158,8 +183,85 @@ class main:
 
         test_loss = total_loss / max(batch_count, 1)
         print(f"Overall Test masked MSE: {test_loss:.4f}\n")
+
+        self._save_evaluation_outputs(
+            test_loss=test_loss,
+            input_ids=saved_input_ids,
+            attention_masks=saved_attention_masks,
+            labels=saved_labels,
+            nan_masks=saved_nan_masks,
+            predictions=saved_predictions,
+        )
         
         return test_loss
+
+    def _save_evaluation_outputs(self, test_loss, input_ids, attention_masks, labels, nan_masks, predictions):
+        os.makedirs(self.artifacts_dir, exist_ok=True)
+
+        if input_ids:
+            input_ids_tensor = torch.cat(input_ids, dim=0)
+            attention_mask_tensor = torch.cat(attention_masks, dim=0)
+            labels_tensor = torch.cat(labels, dim=0)
+            nan_mask_tensor = torch.cat(nan_masks, dim=0)
+            predictions_tensor = torch.cat(predictions, dim=0)
+        else:
+            input_ids_tensor = torch.empty((0, 0), dtype=torch.long)
+            attention_mask_tensor = torch.empty((0, 0), dtype=torch.long)
+            labels_tensor = torch.empty((0, len(self.TARGET_COLS)), dtype=torch.float32)
+            nan_mask_tensor = torch.empty((0, len(self.TARGET_COLS)), dtype=torch.float32)
+            predictions_tensor = torch.empty((0, len(self.TARGET_COLS)), dtype=torch.float32)
+
+        bundle = {
+            "test_loss": float(test_loss),
+            "target_cols": self.TARGET_COLS,
+            "input_ids": input_ids_tensor,
+            "attention_mask": attention_mask_tensor,
+            "labels": labels_tensor,
+            "nan_mask": nan_mask_tensor,
+            "predictions": predictions_tensor,
+        }
+
+        bundle_path = os.path.join(self.artifacts_dir, "evaluation_outputs.pt")
+        torch.save(bundle, bundle_path)
+
+        csv_path = os.path.join(self.artifacts_dir, "evaluation_outputs.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
+            fieldnames = ["row_index", "split_index", "test_loss"]
+            for col in self.TARGET_COLS:
+                fieldnames.extend([f"pred_{col}", f"label_{col}", f"mask_{col}"])
+
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for row_index in range(predictions_tensor.shape[0]):
+                row = {
+                    "row_index": row_index,
+                    "split_index": row_index,
+                    "test_loss": float(test_loss),
+                }
+                for col_index, col_name in enumerate(self.TARGET_COLS):
+                    row[f"pred_{col_name}"] = float(predictions_tensor[row_index, col_index].item())
+                    row[f"label_{col_name}"] = float(labels_tensor[row_index, col_index].item())
+                    row[f"mask_{col_name}"] = float(nan_mask_tensor[row_index, col_index].item())
+                writer.writerow(row)
+
+        summary_path = os.path.join(self.artifacts_dir, "evaluation_summary.json")
+        summary = {
+            "test_loss": float(test_loss),
+            "num_samples": int(predictions_tensor.shape[0]),
+            "num_targets": int(len(self.TARGET_COLS)),
+            "artifacts": {
+                "bundle": bundle_path,
+                "csv": csv_path,
+            },
+        }
+        with open(summary_path, "w", encoding="utf-8") as summary_file:
+            json.dump(summary, summary_file, indent=2)
+
+        if self.verbose:
+            print(f"Saved evaluation outputs to: {bundle_path}")
+            print(f"Saved evaluation CSV to: {csv_path}")
+            print(f"Saved evaluation summary to: {summary_path}")
     
     def run(self):
         """Execute preprocessing, training, and evaluation end to end."""
