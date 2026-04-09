@@ -134,32 +134,53 @@ if __name__ == '__main__':
     p2.join()
     print("\nAll preprocessing finished. Proceeding to Data Loading...\n")
 
-    # --- B. Data Loading Phase ---
+   # --- B. Data Loading Phase ---
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
     
     print("Loading cached datasets from disk...")
-    pyg_graph_list = torch.load('GIN_2/outputs/cache/preprocessed_graphs.pt')
-    transformer_data = torch.load('Transformers_2/outputs/cache/tokenized_dataset.pt')
-
-    # 1. Build a dictionary mapping mol_id -> Graph for instant lookup
-    # PyG saves the mol_id as a string/integer depending on your CSV, we cast to string to be safe
-    graph_dict = {str(g.mol_id): g for g in pyg_graph_list}
     
-    # 2. Extract Tokeniser data
+    # 1. Load PyG Graphs natively using the Pipeline
+    from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
+    pyg_dataset = RelationalGeometryPipeline(
+        root='GIN_2/data', 
+        mol_csv_path='Dataset/New_QM9/molecule_properties.csv', 
+        atom_csv_path='Dataset/New_QM9/atom_properties.csv', 
+        target_cols=TARGET_COLS
+    )
+    # Extract the individual graphs into a standard list
+    pyg_graph_list = [g for g in pyg_dataset]
+
+    # 2. Load Transformer Data
+    transformer_data = torch.load('Transformers_2/outputs/cache/tokenized_dataset.pt', weights_only=False)
+    # 3. Build a dictionary mapping mol_id -> Graph for instant lookup
+    graph_dict = {}
+    for g in pyg_graph_list:
+    # If mol_id is a tensor, we use .item() to get the scalar value
+        if torch.is_tensor(g.mol_id):
+        # .item() gets the number, then we cast to string for the match
+             clean_id = str(g.mol_id.item())
+        else:
+            clean_id = str(g.mol_id)
+    
+        graph_dict[clean_id] = g
+    # 4. Extract Tokeniser data
     t_input_ids = transformer_data['input_ids']
     t_attention_masks = transformer_data['attention_mask']
     t_targets = transformer_data['labels']
     t_nan_mask = transformer_data['nan_mask']
-    t_mol_ids = [str(m) for m in transformer_data['mol_ids']]
+    t_mol_ids = [str(m).strip() for m in transformer_data['mol_ids']]    
     t_scalers = transformer_data['scalers'] 
-    TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
-    # 3. DYNAMIC ALIGNMENT: Only keep data that exists in BOTH pipelines
+
+    # 5. DYNAMIC ALIGNMENT: Only keep data that exists in BOTH pipelines
     aligned_graphs = []
     aligned_input_ids = []
     aligned_attention_masks = []
     aligned_targets = []
     aligned_nan_masks = []
-
+    print(f"Sample Transformer ID: '{t_mol_ids[0]}' (Type: {type(t_mol_ids[0])})")
+    sample_graph_id = list(graph_dict.keys())[0]
+    print(f"Sample Graph ID: '{sample_graph_id}' (Type: {type(sample_graph_id)})")
     print("Aligning multimodal data...")
     for i, mol_id in enumerate(t_mol_ids):
         if mol_id in graph_dict:
@@ -168,16 +189,17 @@ if __name__ == '__main__':
             aligned_attention_masks.append(t_attention_masks[i])
             aligned_targets.append(t_targets[i])
             aligned_nan_masks.append(t_nan_mask[i])
-
+    if len(aligned_input_ids) == 0:
+        raise ValueError("Zero molecules were aligned! Check if 'mol_id' in your Graph objects matches the IDs in 'tokenized_dataset.pt'.")
     print(f"Alignment complete! Kept {len(aligned_graphs)} valid multimodal molecules.")
 
-    # 4. Stack the text lists back into tensors
+    # 6. Stack the text lists back into tensors
     aligned_input_ids = torch.stack(aligned_input_ids)
     aligned_attention_masks = torch.stack(aligned_attention_masks)
     aligned_targets = torch.stack(aligned_targets)
     aligned_nan_masks = torch.stack(aligned_nan_masks)
 
-    # 5. Create Dataset and Split
+    # 7. Create Dataset and Split
     full_dataset = HybridDataset(
         aligned_graphs, 
         aligned_input_ids, 
@@ -189,6 +211,8 @@ if __name__ == '__main__':
     # Recalculate train/val split on the freshly aligned data
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size
+    
+    # Use a fixed seed so the train/val split is identical every time you run main.py
     generator = torch.Generator().manual_seed(42)
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size], generator=generator)
 

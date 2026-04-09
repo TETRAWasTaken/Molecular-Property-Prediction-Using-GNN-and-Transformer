@@ -250,7 +250,7 @@ if __name__ == "__main__":
         print(f"[Font] Loaded: {font_path} -> {families}")
     
     # Load video splash screen
-    video_splash_path = Path("/Users/anshumaansoni/Downloads/Splash.mp4")
+    video_splash_path = Path(r"C:\Users\kolhe\Documents\Molecular-Property-Prediction-Using-GNN-and-Transformer\GUI\assets\splash.mp4")
     video_splash = None
     
     if video_splash_path.exists():

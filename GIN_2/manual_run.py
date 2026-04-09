@@ -62,7 +62,7 @@ class main:
         self.NUM_LAYERS = 7    # Deep GIN with Jumping Knowledge
         self.LEARNING_RATE = 3e-4
         self.WEIGHT_DECAY = 1e-5
-        self.EPOCHS = 20      # Increased for proper convergence
+        self.EPOCHS = 10      # Increased for proper convergence
         self.PATIENCE = 20
         
         # Smart device selector
