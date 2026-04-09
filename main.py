@@ -47,12 +47,24 @@ class HybridFusionModel(nn.Module):
         
         self.graph_encoder = GIN(hidden_dim=gin_hidden_dim, output_dim=output_dim)
         self.text_encoder = StandaloneChemBERTa(model_name=transformer_model, num_targets=output_dim)
+        
+        # ---> NEW: Dimension Matching Projector <---
+        # Squashes the 768-dim text embedding down to 256-dim to match the graph
+        self.text_projector = nn.Sequential(
+            nn.Linear(self.text_encoder.hidden_size, gin_hidden_dim),
+            nn.BatchNorm1d(gin_hidden_dim),
+            nn.ReLU()
+        )
+        
+        # Both gates now take the standardized 256-dim inputs
         self.graph_gate = nn.Sequential(nn.Linear(gin_hidden_dim, 1), nn.Sigmoid())
-        self.text_gate = nn.Sequential(nn.Linear(self.text_encoder.hidden_size, 1), nn.Sigmoid())
+        self.text_gate = nn.Sequential(nn.Linear(gin_hidden_dim, 1), nn.Sigmoid())
+        
         # Convert them to feature extractors (Encoders)
         self.graph_encoder.prediction_head[-1] = nn.Identity() 
         self.text_encoder.prediction_head = nn.Identity()
         
+        # Concat dim: 256 (Graph) + 256 (Text) + 256 (Interaction) = 768 dimensions going into MLP
         concat_dim = gin_hidden_dim * 3
         
         # Unified MLP
@@ -71,20 +83,26 @@ class HybridFusionModel(nn.Module):
         )
 
     def forward(self, graph_data, input_ids, attention_mask):
+        # 1. Extract raw embeddings
         graph_embedding = self.graph_encoder(graph_data)
-        text_embedding = self.text_encoder(input_ids, attention_mask)
+        raw_text_embedding = self.text_encoder(input_ids, attention_mask)
         
-        # Calculate dynamic importances (0.0 to 1.0)
+        # 2. Project Text to match Graph (768 -> 256)
+        text_embedding = self.text_projector(raw_text_embedding)
+        
+        # 3. Calculate dynamic importances (0.0 to 1.0)
         g_weight = self.graph_gate(graph_embedding)
         t_weight = self.text_gate(text_embedding)
         
-        # Scale the embeddings by their importance
+        # 4. Scale the embeddings by their importance
         weighted_graph = graph_embedding * g_weight
         weighted_text = text_embedding * t_weight
         
-        # Concatenate the optimized embeddings
+        # 5. Create explicit interaction and fuse
+        # (This now safely multiplies a 256-dim tensor by a 256-dim tensor)
         interaction = weighted_graph * weighted_text
-        fused_embedding = torch.cat([weighted_graph, weighted_text, interaction],dim=1)
+        fused_embedding = torch.cat([weighted_graph, weighted_text, interaction], dim=1)
+        
         return self.fusion_mlp(fused_embedding)
 
 # ==========================================
@@ -132,6 +150,7 @@ def masked_mse_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: 
         return masked_loss.sum() / valid_entries
     else:
         return torch.tensor(0.0, device=predictions.device, requires_grad=True)
+
 # ==========================================
 # 5. MAIN EXECUTION BLOCK
 # ==========================================
@@ -167,6 +186,7 @@ if __name__ == '__main__':
 
     # 2. Load Transformer Data
     transformer_data = torch.load('Transformers_2/outputs/cache/tokenized_dataset.pt', weights_only=False)
+    
     # 3. Build a dictionary mapping mol_id -> Graph for instant lookup
     graph_dict = {}
     for g in pyg_graph_list:
@@ -178,6 +198,7 @@ if __name__ == '__main__':
             clean_id = str(g.mol_id)
     
         graph_dict[clean_id] = g
+        
     # 4. Extract Tokeniser data
     t_input_ids = transformer_data['input_ids']
     t_attention_masks = transformer_data['attention_mask']
@@ -192,9 +213,11 @@ if __name__ == '__main__':
     aligned_attention_masks = []
     aligned_targets = []
     aligned_nan_masks = []
+    
     print(f"Sample Transformer ID: '{t_mol_ids[0]}' (Type: {type(t_mol_ids[0])})")
     sample_graph_id = list(graph_dict.keys())[0]
     print(f"Sample Graph ID: '{sample_graph_id}' (Type: {type(sample_graph_id)})")
+    
     print("Aligning multimodal data...")
     for i, mol_id in enumerate(t_mol_ids):
         if mol_id in graph_dict:
@@ -203,6 +226,7 @@ if __name__ == '__main__':
             aligned_attention_masks.append(t_attention_masks[i])
             aligned_targets.append(t_targets[i])
             aligned_nan_masks.append(t_nan_mask[i])
+            
     if len(aligned_input_ids) == 0:
         raise ValueError("Zero molecules were aligned! Check if 'mol_id' in your Graph objects matches the IDs in 'tokenized_dataset.pt'.")
     print(f"Alignment complete! Kept {len(aligned_graphs)} valid multimodal molecules.")
@@ -232,6 +256,7 @@ if __name__ == '__main__':
 
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    
     # --- C. Model & Optimizer Setup ---
     model = HybridFusionModel().to(device)
     
@@ -274,7 +299,6 @@ if __name__ == '__main__':
             
             predictions = model(graph_data, b_input_ids, b_attention_mask)
             
-            # CHANGED: Use the custom masked MSE loss
             loss = masked_mse_loss(predictions, b_targets, b_nan_mask)
             
             loss.backward()
@@ -310,6 +334,7 @@ if __name__ == '__main__':
                 
         avg_val_loss = total_val_loss / len(val_loader)
         scheduler.step(avg_val_loss)
+        
         # --- Physical Metric Calculation (Denormalization) ---
         y_pred = torch.cat(all_preds, dim=0).numpy()
         y_true = torch.cat(all_targets, dim=0).numpy()
