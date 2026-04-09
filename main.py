@@ -108,16 +108,19 @@ def run_transformer_preprocessing():
     tokeniser.run_tokenizer(verbose=False)
     print("[Process 2] Transformer Preprocessing Complete.")
 
-def masked_mse_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: torch.Tensor) -> torch.Tensor:
-    loss_fn = nn.MSELoss(reduction='none')
+def masked_mse_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: torch.Tensor, beta=1.0) -> torch.Tensor:
+    # Use SmoothL1Loss instead of MSELoss
+    # 'beta' controls the threshold where it switches from squared to absolute loss
+    loss_fn = nn.SmoothL1Loss(reduction='none', beta=beta)
+    
     raw_loss = loss_fn(predictions, targets)
     masked_loss = raw_loss * nan_mask
+    
     valid_entries = nan_mask.sum()
     if valid_entries > 0:
         return masked_loss.sum() / valid_entries
     else:
         return torch.tensor(0.0, device=predictions.device, requires_grad=True)
-
 # ==========================================
 # 5. MAIN EXECUTION BLOCK
 # ==========================================

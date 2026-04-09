@@ -1,3 +1,4 @@
+from matplotlib.pylab import beta
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -132,10 +133,14 @@ class FineTuning(StandaloneChemBERTa):
                 print(f"--> Saved new best model to {save_path}\n")
 
     @staticmethod
-    def masked_mse_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: torch.Tensor) -> torch.Tensor:
-        loss_fn = nn.MSELoss(reduction='none')
+    def masked_smooth_l1_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: torch.Tensor, beta=1.0) -> torch.Tensor:
+    # Use SmoothL1Loss instead of MSELoss
+    # 'beta' controls the threshold where it switches from squared to absolute loss
+        loss_fn = nn.SmoothL1Loss(reduction='none', beta=beta)
+    
         raw_loss = loss_fn(predictions, targets)
         masked_loss = raw_loss * nan_mask
+    
         valid_entries = nan_mask.sum()
         if valid_entries > 0:
             return masked_loss.sum() / valid_entries
