@@ -133,7 +133,7 @@ class FineTuning(StandaloneChemBERTa):
                 print(f"--> Saved new best model to {save_path}\n")
 
     @staticmethod
-    def masked_smooth_l1_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: torch.Tensor, beta=1.0) -> torch.Tensor:
+    def masked_mse_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: torch.Tensor, beta=1.0) -> torch.Tensor:
     # Use SmoothL1Loss instead of MSELoss
     # 'beta' controls the threshold where it switches from squared to absolute loss
         loss_fn = nn.SmoothL1Loss(reduction='none', beta=beta)
