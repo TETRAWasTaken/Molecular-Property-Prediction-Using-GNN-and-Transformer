@@ -58,7 +58,7 @@ class ResultsPage(QWidget):
         title_font.setPointSize(40)
         title_font.setWeight(QFont.Weight.Bold)
         title.setFont(title_font)
-        title.setStyleSheet("color: #F2F4F8; letter-spacing: 0.5px;")
+        title.setStyleSheet("color: #F2F4F8; letter-spacing: 0.5px; font-size: 40px; font-weight: 800;")
         header_layout.addWidget(title)
         
         subtitle = QLabel("Results from molecular screening. Double-click a row to visualize in 3D.")

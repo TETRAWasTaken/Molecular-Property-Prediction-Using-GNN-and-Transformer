@@ -1,3 +1,10 @@
+"""Launch the PySide6 application with a styled main window and optional splash video.
+
+The module loads the application stylesheet, optionally plays a splash screen,
+warms up the inference engine in the background, and opens the main GUI window
+after startup.
+"""
+
 import sys
 import os
 from pathlib import Path
@@ -17,7 +24,6 @@ from PySide6.QtCore import QThread, QTimer, QUrl
 from core.inference import EngineWarmupThread
 
 stylesheet = """
-/* Main Application */
 QMainWindow {
     background-color: #1A1C22;
 }
@@ -27,12 +33,10 @@ QWidget {
     font-size: 13px;
 }
 
-/* Labels */
 QLabel {
     color: #d1d1d1;
 }
 
-/* Group Boxes */
 QGroupBox {
     background-color: #252a32;
     border: 2px solid #3A3F49;
@@ -60,7 +64,6 @@ QGroupBox::title {
     letter-spacing: 0.8px;
 }
 
-/* Input Fields */
 QTextEdit {
     background-color: #1f2329;
     border: 2px solid #3A3F49;
@@ -90,7 +93,6 @@ QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus {
     background-color: #222830;
 }
 
-/* Buttons */
 QPushButton {
     background-color: #0d1661;
     color: #ffffff;
@@ -117,7 +119,6 @@ QPushButton#runButton {
     padding: 12px 24px;
 }
 
-/* Tables */
 QTableWidget {
     background-color: #1f2329;
     alternate-background-color: #252a32;
@@ -156,7 +157,6 @@ QTableWidget:focus {
     border: 2px solid #5B6EFF;
 }
 
-/* Scroll Bars */
 QScrollBar:vertical {
     background-color: #1f2329;
     width: 10px;
@@ -191,15 +191,20 @@ QScrollBar::handle:horizontal:hover {
 """
 
 class VideoSplashScreen(QDialog):
-    """A video splash screen that plays a video file during app startup."""
+    """A video splash screen that plays a video file during app startup.
+
+    Args:
+        video_path: Absolute or relative path to the splash video file.
+        parent: Optional parent widget.
+    """
+
     def __init__(self, video_path: Path, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setModal(False)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         self.resize(960, 540)
-        
-        # Center on screen
+
         screen = QApplication.primaryScreen()
         geo = self.frameGeometry()
         center = screen.availableGeometry().center()
@@ -214,29 +219,50 @@ class VideoSplashScreen(QDialog):
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
-        self.audio.setVolume(0.0)  # Mute splash video
+        self.audio.setVolume(0.0)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video_widget)
         self.player.setSource(QUrl.fromLocalFile(str(video_path)))
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
 
     def _on_media_status_changed(self, status):
-        """Auto-loop video or handle end of playback."""
+        """Auto-loop the video when playback reaches the end.
+
+        Args:
+            status: Current media status emitted by the player.
+        """
+
         if status == QMediaPlayer.EndOfMedia:
             self.player.setPosition(0)
             self.player.play()
 
     def start(self):
-        """Show the splash and start video playback."""
+        """Show the splash screen and begin playback.
+
+        Args:
+            None.
+        """
+
         self.show()
         self.player.play()
 
     def stop(self):
-        """Stop video and close splash."""
+        """Stop playback and close the splash screen.
+
+        Args:
+            None.
+        """
+
         self.player.stop()
         self.close()
 
-if __name__ == "__main__":
+
+def main():
+    """Start the GUI application, show the splash screen, and open the main window.
+
+    Args:
+        None.
+    """
 
     app = QApplication(sys.argv)
     app.setStyleSheet(stylesheet)
@@ -248,11 +274,10 @@ if __name__ == "__main__":
     else:
         families = QFontDatabase.applicationFontFamilies(font_id)
         print(f"[Font] Loaded: {font_path} -> {families}")
-    
-    # Load video splash screen
-    video_splash_path = Path(r"\assets\splash.mp4")
+
+    video_splash_path = Path(r"GUI/assets/splash.mp4")
     video_splash = None
-    
+
     if video_splash_path.exists():
         video_splash = VideoSplashScreen(video_splash_path)
         video_splash.start()
@@ -260,21 +285,31 @@ if __name__ == "__main__":
     else:
         print(f"[Splash] Video not found: {video_splash_path}")
 
-    # Warm up ONNX Runtime engine in parallel while the app is launching.
     engine_warmup_thread = EngineWarmupThread()
 
     def _on_engine_ready(model_path):
+        """Report successful warm-up completion.
+
+        Args:
+            model_path: Path to the warmed-up model artifact.
+        """
+
         print(f"[Engine] Warm-up complete: {model_path}")
 
     def _on_engine_error(message):
+        """Report warm-up failures to the console.
+
+        Args:
+            message: Error message emitted by the warm-up worker.
+        """
+
         print(f"[Engine] Warm-up failed: {message}")
 
     engine_warmup_thread.ready.connect(_on_engine_ready)
     engine_warmup_thread.error.connect(_on_engine_error)
     engine_warmup_thread.start()
 
-    app.processEvents()  # Ensure the splash screen is displayed immediately
-
+    app.processEvents()
     app.setStyle("Fusion")
 
     window = MainWindow()
@@ -283,10 +318,18 @@ if __name__ == "__main__":
     window.engine_warmup_thread = engine_warmup_thread
 
     def _show_main_window():
+        """Display the main window and stop the splash screen if it is running.
+
+        Args:
+            None.
+        """
+
         window.show()
         if video_splash is not None:
             video_splash.stop()
 
-    # Do not block with sleep; let event loop paint splash, then open main window.
     QTimer.singleShot(8000, _show_main_window)
     sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()

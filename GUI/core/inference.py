@@ -9,6 +9,8 @@ from PySide6.QtCore import Signal, QThread
 from transformers import AutoTokenizer, AutoModel
 from rdkit import Chem
 from rdkit.Chem import AllChem
+from rdkit.Chem import rdFingerprintGenerator
+from rdkit import DataStructs
 import torch
 
 # Load platform-specific shared library produced by Makefile/Makefile.windows.
@@ -53,6 +55,7 @@ _CONFIDENCE_CALIBRATION_CACHE = None
 _TRANSFORMER_MODEL = None
 _EXPLAINABILITY_MODEL_PATH = None
 _TOKENIZER_FALLBACK_WARNED = False
+_MORGAN_FP_GENERATOR = None
 
 def _one_hot_encoding(x, allowable_set):
 	if x not in allowable_set:
@@ -427,6 +430,227 @@ class BatchInferenceThread(QThread):
 		self.finished.emit(results, failures)
 
 
+def _canonicalize_smiles(smiles):
+	text = (smiles or '').strip()
+	if not text:
+		return ''
+	mol = Chem.MolFromSmiles(text)
+	if mol is None:
+		return ''
+	return Chem.MolToSmiles(mol, canonical=True)
+
+
+def _morgan_fingerprint_from_smiles(smiles, radius=2, n_bits=2048):
+	global _MORGAN_FP_GENERATOR
+	mol = Chem.MolFromSmiles((smiles or '').strip())
+	if mol is None:
+		return None
+
+	if _MORGAN_FP_GENERATOR is None:
+		try:
+			_MORGAN_FP_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(
+				radius=int(radius),
+				fpSize=int(n_bits),
+			)
+		except Exception:
+			_MORGAN_FP_GENERATOR = False
+
+	if _MORGAN_FP_GENERATOR:
+		return _MORGAN_FP_GENERATOR.GetFingerprint(mol)
+
+	# Compatibility fallback for older RDKit distributions.
+	return AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits)
+
+
+def _standardized_property_similarity(query_prediction, candidate_matrix):
+	query = np.asarray(query_prediction, dtype=np.float32)
+	candidates = np.asarray(candidate_matrix, dtype=np.float32)
+	if candidates.ndim != 2:
+		raise ValueError('candidate_matrix must be 2D')
+	if candidates.shape[0] < 1:
+		raise ValueError('candidate_matrix must include at least one row')
+	if query.ndim != 1 or query.shape[0] != candidates.shape[1]:
+		raise ValueError('query_prediction shape must match candidate_matrix columns')
+
+	means = np.mean(candidates, axis=0)
+	stds = np.std(candidates, axis=0)
+	stds = np.where(stds < 1e-6, 1.0, stds)
+
+	query_std = (query - means) / stds
+	candidates_std = (candidates - means) / stds
+	deltas = candidates_std - query_std
+	distances = np.linalg.norm(deltas, axis=1)
+	normalized_distance = distances / float(np.sqrt(candidates.shape[1]))
+	# Convert distance to bounded similarity in [0, 1].
+	return (1.0 / (1.0 + normalized_distance)).astype(np.float32)
+
+
+class SimilarityInferenceThread(QThread):
+	finished = Signal(dict)
+	error = Signal(str)
+
+	def __init__(
+		self,
+		query_smiles,
+		dataset_smiles,
+		top_k=10,
+		model_path=None,
+		n_conformers=3,
+		property_weight=0.7,
+		fingerprint_weight=0.3,
+	):
+		super().__init__()
+		self.query_smiles = (query_smiles or '').strip()
+		self.dataset_smiles = [s.strip() for s in (dataset_smiles or []) if s and s.strip()]
+		self.top_k = int(top_k)
+		self.model_path = model_path
+		self.n_conformers = int(n_conformers)
+		self.property_weight = float(property_weight)
+		self.fingerprint_weight = float(fingerprint_weight)
+
+	def run(self):
+		if not self.query_smiles:
+			self.error.emit('Query SMILES is required')
+			return
+		if not self.dataset_smiles:
+			self.error.emit('Dataset SMILES input is empty')
+			return
+
+		weight_sum = self.property_weight + self.fingerprint_weight
+		if weight_sum <= 0.0:
+			self.error.emit('Invalid similarity weights: property and fingerprint weights must sum to a positive value')
+			return
+
+		property_weight = self.property_weight / weight_sum
+		fingerprint_weight = self.fingerprint_weight / weight_sum
+
+		try:
+			init_hybrid_engine(model_path=self.model_path)
+		except Exception as exc:
+			self.error.emit(str(exc))
+			return
+
+		query_fp = _morgan_fingerprint_from_smiles(self.query_smiles)
+		if query_fp is None:
+			self.error.emit(f'Invalid query SMILES: {self.query_smiles}')
+			return
+
+		try:
+			query_result = run_hybrid_regression_with_confidence(
+				self.query_smiles,
+				model_path=self.model_path,
+				n_conformers=self.n_conformers,
+			)
+		except Exception as exc:
+			self.error.emit(f'Failed to predict query molecule: {exc}')
+			return
+
+		query_prediction = np.asarray(query_result['prediction'], dtype=np.float32)
+		query_canonical = _canonicalize_smiles(self.query_smiles)
+
+		seen = set()
+		dataset_unique = []
+		for smiles in self.dataset_smiles:
+			canonical = _canonicalize_smiles(smiles)
+			if not canonical:
+				continue
+			if canonical == query_canonical:
+				continue
+			if canonical in seen:
+				continue
+			seen.add(canonical)
+			dataset_unique.append(smiles)
+
+		if not dataset_unique:
+			self.error.emit('No valid dataset molecules found after deduplication and query exclusion')
+			return
+
+		candidates = []
+		skipped_count = 0
+		failures = []
+
+		for smiles in dataset_unique:
+			fingerprint = _morgan_fingerprint_from_smiles(smiles)
+			if fingerprint is None:
+				skipped_count += 1
+				continue
+
+			try:
+				result = run_hybrid_regression_with_confidence(
+					smiles,
+					model_path=self.model_path,
+					n_conformers=self.n_conformers,
+				)
+			except Exception as exc:
+				failures.append((smiles, str(exc)))
+				continue
+
+			prediction = np.asarray(result['prediction'], dtype=np.float32)
+			confidence = result.get('confidence') or {}
+			confidence_score = confidence.get('confidence_score')
+			if not isinstance(confidence_score, (float, int)):
+				confidence_score = None
+
+			candidates.append(
+				{
+					'smiles': smiles,
+					'fingerprint': fingerprint,
+					'prediction': prediction,
+					'confidence': confidence,
+					'confidence_score': confidence_score,
+				}
+			)
+
+		if not candidates:
+			self.error.emit('No dataset molecules were successfully predicted')
+			return
+
+		candidate_matrix = np.vstack([row['prediction'] for row in candidates])
+		property_similarity = _standardized_property_similarity(query_prediction, candidate_matrix)
+
+		ranked = []
+		for idx, row in enumerate(candidates):
+			fingerprint_similarity = float(DataStructs.TanimotoSimilarity(query_fp, row['fingerprint']))
+			prop_similarity = float(property_similarity[idx])
+			hybrid = (property_weight * prop_similarity) + (fingerprint_weight * fingerprint_similarity)
+			ranked.append(
+				{
+					'smiles': row['smiles'],
+					'prediction': row['prediction'].tolist(),
+					'confidence': row['confidence'],
+					'confidence_score': row['confidence_score'],
+					'property_similarity': prop_similarity,
+					'fingerprint_similarity': fingerprint_similarity,
+					'hybrid_score': float(hybrid),
+				}
+			)
+
+		ranked.sort(
+			key=lambda item: (
+				item['hybrid_score'],
+				item['confidence_score'] if item['confidence_score'] is not None else -1.0,
+			),
+			reverse=True,
+		)
+
+		top_k = max(1, self.top_k)
+		payload = {
+			'query_smiles': self.query_smiles,
+			'query_prediction': query_prediction.tolist(),
+			'query_confidence': query_result.get('confidence') or {},
+			'ranked_results': ranked[:top_k],
+			'total_candidates': len(dataset_unique),
+			'skipped_count': skipped_count,
+			'failed_count': len(failures),
+			'failures': failures,
+			'weights': {
+				'property_weight': property_weight,
+				'fingerprint_weight': fingerprint_weight,
+			},
+		}
+		self.finished.emit(payload)
+
+
 class EngineWarmupThread(QThread):
 	ready = Signal(str)
 	error = Signal(str)
@@ -473,6 +697,7 @@ def _get_transformer_model():
 		model_path = _resolve_explainability_model_path()
 		_TRANSFORMER_MODEL = AutoModel.from_pretrained(
 			str(model_path),
+			attn_implementation='eager',
 			local_files_only=True,
 		)
 		_TRANSFORMER_MODEL.eval()

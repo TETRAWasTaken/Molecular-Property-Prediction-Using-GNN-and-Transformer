@@ -5,10 +5,12 @@ from PySide6.QtCore import QEasingCurve
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMessageBox
 
+from gui.page_home import HomePage
 from gui.page_input import InputPage
 from gui.page_result import ResultsPage
+from gui.page_similarityindex import SimilarityIndexPage
 from gui.effects import Animation
-from core.inference import BatchInferenceThread
+from core.inference import BatchInferenceThread, SimilarityInferenceThread
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -28,26 +30,37 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stack)
 
         # Initialize the pages
+        self.page_home = HomePage()
         self.page_input = InputPage()
         self.page_results = ResultsPage()
+        self.page_similarity = SimilarityIndexPage()
 
         # Add pages to the stack
-        self.stack.addWidget(self.page_input)    # Index 0
-        self.stack.addWidget(self.page_results)  # Index 1
+        self.stack.addWidget(self.page_home)       # Index 0
+        self.stack.addWidget(self.page_input)      # Index 1
+        self.stack.addWidget(self.page_results)    # Index 2
+        self.stack.addWidget(self.page_similarity) # Index 3
 
         # Wire up the navigation logic
+        self.page_home.open_screening_signal.connect(self.show_input)
+        self.page_home.open_similarity_signal.connect(self.show_similarity)
+        self.page_input.go_home_signal.connect(self.show_home)
         self.page_input.run_screening_signal.connect(self.show_results)
         self.page_results.go_back_signal.connect(self.show_input)
+        self.page_similarity.go_home_signal.connect(self.show_home)
+        self.page_similarity.run_similarity_signal.connect(self.run_similarity_search)
 
         # Keep animation references alive during playback.
+        self.anim_home = None
         self.anim_input = None
         self.anim_result = None
         self.inference_thread = None
+        self.similarity_thread = None
         self.active_property_ranges = {}
         self.setWindowOpacity(1.0)
 
     def show_results(self, payload=None):
-        if self.inference_thread is not None and self.inference_thread.isRunning():
+        if self._is_any_job_running():
             return
 
         payload = payload if isinstance(payload, dict) else {}
@@ -70,7 +83,7 @@ class MainWindow(QMainWindow):
 
         self.page_results.table.setRowCount(0)
         self.page_results.summary_label.setText(f"Running ONNX regression for {len(all_smiles)} molecule(s)...")
-        self.stack.setCurrentIndex(1)
+        self.stack.setCurrentIndex(2)
 
         self._set_run_state(is_running=True)
         self.inference_thread = BatchInferenceThread(
@@ -121,6 +134,7 @@ class MainWindow(QMainWindow):
 
     def _set_run_state(self, is_running):
         self.page_input.btn_run.setEnabled(not is_running)
+        self.page_input.btn_home.setEnabled(not is_running)
         if is_running:
             self.page_input.btn_run.setText("Running...")
             self.page_results.progress_bar.show()
@@ -181,10 +195,90 @@ class MainWindow(QMainWindow):
         return output
 
     def show_input(self):
-        self.stack.setCurrentIndex(0)
+        self.stack.setCurrentIndex(1)
 
         self.anim_input = Animation(target=self,
                               property_name=b"windowOpacity",
                               duration=300, start_value=0.85, end_value=1.0,
                               easing_curve=QEasingCurve.OutQuad)
         self.anim_input.animation.start()
+
+    def show_home(self):
+        if self._is_any_job_running():
+            return
+        self.stack.setCurrentIndex(0)
+
+        self.anim_home = Animation(
+            target=self,
+            property_name=b"windowOpacity",
+            duration=300,
+            start_value=0.85,
+            end_value=1.0,
+            easing_curve=QEasingCurve.OutQuad,
+        )
+        self.anim_home.animation.start()
+
+    def show_similarity(self):
+        if self._is_any_job_running():
+            return
+        self.stack.setCurrentIndex(3)
+
+    def run_similarity_search(self, payload=None):
+        if self._is_any_job_running():
+            return
+
+        payload = payload if isinstance(payload, dict) else {}
+        query_smiles = (payload.get("query_smiles") or "").strip()
+        csv_path = payload.get("csv_path")
+        manual_smiles = payload.get("manual_smiles") or []
+        top_k = int(payload.get("top_k", 10) or 10)
+
+        if not query_smiles:
+            QMessageBox.information(self, "Query Required", "Please provide one query SMILES.")
+            return
+
+        csv_smiles = []
+        if csv_path:
+            try:
+                csv_smiles = self._extract_smiles_from_csv(csv_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "CSV Error", str(exc))
+                return
+
+        dataset_smiles = self._deduplicate_smiles(list(manual_smiles) + csv_smiles)
+        if not dataset_smiles:
+            QMessageBox.information(
+                self,
+                "Dataset Required",
+                "Please upload a dataset CSV and/or paste dataset SMILES.",
+            )
+            return
+
+        self.page_similarity.set_running_state(True, dataset_size=len(dataset_smiles))
+        self.similarity_thread = SimilarityInferenceThread(
+            query_smiles=query_smiles,
+            dataset_smiles=dataset_smiles,
+            top_k=top_k,
+            n_conformers=3,
+            property_weight=0.7,
+            fingerprint_weight=0.3,
+        )
+        self.similarity_thread.finished.connect(self._on_similarity_finished)
+        self.similarity_thread.error.connect(self._on_similarity_error)
+        self.similarity_thread.start()
+
+    def _on_similarity_finished(self, payload):
+        self.page_similarity.set_running_state(False)
+        self.page_similarity.populate_similarity_results(payload)
+        self.similarity_thread = None
+
+    def _on_similarity_error(self, error_message):
+        self.page_similarity.set_running_state(False)
+        self.page_similarity.set_status_error(f"Similarity run failed: {error_message}")
+        self.similarity_thread = None
+        QMessageBox.critical(self, "Similarity Error", error_message)
+
+    def _is_any_job_running(self):
+        screening_running = self.inference_thread is not None and self.inference_thread.isRunning()
+        similarity_running = self.similarity_thread is not None and self.similarity_thread.isRunning()
+        return screening_running or similarity_running

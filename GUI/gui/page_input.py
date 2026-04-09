@@ -1,10 +1,9 @@
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QFormLayout,
-    QDoubleSpinBox, QScrollArea, QLabel, QTextEdit, QPushButton, QFileDialog,
-    QGraphicsDropShadowEffect, QFrame
+    QDoubleSpinBox, QScrollArea, QLabel, QTextEdit, QPushButton, QFileDialog
 )
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from gui.effects import Shadow, Glow
 
 class InputPage(QWidget):
@@ -13,6 +12,7 @@ class InputPage(QWidget):
     """
 
     run_screening_signal = Signal(object)
+    go_home_signal = Signal()
 
 
     def __init__(self):
@@ -35,10 +35,22 @@ class InputPage(QWidget):
             'cv': (-2.001001, 2.176433),
         }
         self.uploaded_csv_path = None
-    
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(16, 16, 16, 16)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setSpacing(16)
+
+        title = QLabel("Bulk Screening Input")
+        title_font = QFont()
+        title_font.setPointSize(40)
+        title_font.setWeight(QFont.Weight.Bold)
+        title.setFont(title_font)
+        title.setStyleSheet("color: #f2f4f8; font-size: 40px; font-weight: 800; letter-spacing: 0.4px;")
+        root_layout.addWidget(title)
+
+        main_layout = QHBoxLayout()
         main_layout.setSpacing(16)
+        root_layout.addLayout(main_layout)
 
         # Keep distinct effect instances alive per widget.
         self.left_shadow = Shadow(color=QColor(255, 255, 255, 20),
@@ -159,10 +171,15 @@ class InputPage(QWidget):
         self.btn_run.setFont(btn_font)
         right_layout.addWidget(self.btn_run)
 
+        self.btn_home = QPushButton("Home")
+        self.btn_home.setMinimumHeight(40)
+        right_layout.addWidget(self.btn_home)
+
         main_layout.addWidget(right_group, stretch=2)
 
         self.btn_upload.clicked.connect(self.upload_file)
         self.btn_run.clicked.connect(self.run_screening)
+        self.btn_home.clicked.connect(self.go_home_signal.emit)
 
     def upload_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Select SMILES CSV", "", "CSV Files (*.csv)")

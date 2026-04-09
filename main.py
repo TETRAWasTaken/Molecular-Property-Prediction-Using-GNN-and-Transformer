@@ -1,26 +1,42 @@
+"""Train and evaluate a hybrid molecular property predictor that combines GIN graph
+representations with ChemBERTa text embeddings for aligned multitask regression.
+
+The script prepares cached graph and tokenizer artifacts, aligns them by molecule
+identifier, trains a fusion model, and reports validation losses and per-property
+metrics with early stopping.
+"""
+
 import os
+
 os.environ["HF_HUB_OFFLINE"] = "1"
+
+import multiprocessing
+
 import torch
 import torch.nn as nn
-import multiprocessing
-import subprocess
 from sklearn.metrics import mean_absolute_error, r2_score
 from torch.utils.data import Dataset, random_split
 from torch_geometric.loader import DataLoader
 
-
-# 1. Modular Imports: Pull directly from your standalone folders
 from GIN_2.Utils.GIN import GIN
 from Transformers_2.Utils.Transformer import StandaloneChemBERTa
 
-# ==========================================
-# 2. DATASET & ALIGNMENT
-# ==========================================
+
 class HybridDataset(Dataset):
+    """Dataset wrapper that keeps graph, token, target, and mask tensors aligned.
+
+    Each item exposes the PyG graph object together with the corresponding
+    tokenized text inputs, regression targets, and NaN mask used to ignore
+    missing labels during loss computation.
+
+    Args:
+        pyg_graph_list: List of PyG graph objects aligned to the tokenizer output.
+        tokenized_input_ids: Token ID tensors for each molecule.
+        tokenized_attention_masks: Attention mask tensors for each molecule.
+        targets: Multitask regression targets.
+        nan_mask: Mask with 1s for valid targets and 0s for missing targets.
     """
-    Ensures PyG 3D Graphs and Tokenized Text stay perfectly aligned during batching.
-    Now includes nan_mask for robust loss calculation.
-    """
+
     def __init__(self, pyg_graph_list, tokenized_input_ids, tokenized_attention_masks, targets, nan_mask):
         self.graphs = pyg_graph_list
         self.input_ids = tokenized_input_ids
@@ -40,36 +56,44 @@ class HybridDataset(Dataset):
             'nan_mask': self.nan_mask[idx]
         }
 
-# ==========================================
-# 3. HYBRID FUSION MODEL ARCHITECTURE
-# ==========================================
 class HybridFusionModel(nn.Module):
-    def __init__(self, gin_hidden_dim=256, transformer_model="seyonec/ChemBERTa-zinc-base-v1", mlp_hidden_dim=512, output_dim=12, dropout=0.1):
+    """Fuse graph and text embeddings into a multitask molecular property head.
+
+    The model encodes molecular graphs with a GIN backbone, encodes molecular
+    text with ChemBERTa, projects the text embedding into the graph embedding
+    space, applies learned gating to both modalities, constructs an explicit
+    bilinear interaction, and predicts all target properties with a shared MLP.
+
+    Args:
+        gin_hidden_dim: Hidden dimension used by the graph encoder and fusion blocks.
+        transformer_model: Hugging Face model name for the ChemBERTa encoder.
+        mlp_hidden_dim: Hidden dimension used by the fusion MLP.
+        output_dim: Number of regression targets to predict.
+        dropout: Dropout probability applied inside the fusion MLP.
+    """
+
+    def __init__(self, gin_hidden_dim=512, transformer_model="seyonec/ChemBERTa-zinc-base-v1", mlp_hidden_dim=1024, output_dim=12, dropout=0.1):
         super().__init__()
         
         self.graph_encoder = GIN(hidden_dim=gin_hidden_dim, output_dim=output_dim)
         self.text_encoder = StandaloneChemBERTa(model_name=transformer_model, num_targets=output_dim)
-        
-        # ---> NEW: Dimension Matching Projector <---
-        # Squashes the 768-dim text embedding down to 256-dim to match the graph
+
         self.text_projector = nn.Sequential(
             nn.Linear(self.text_encoder.hidden_size, gin_hidden_dim),
             nn.BatchNorm1d(gin_hidden_dim),
             nn.ReLU()
         )
-        
-        # Both gates now take the standardized 256-dim inputs
-        self.graph_gate = nn.Sequential(nn.Linear(gin_hidden_dim, 1), nn.Sigmoid())
-        self.text_gate = nn.Sequential(nn.Linear(gin_hidden_dim, 1), nn.Sigmoid())
-        
-        # Convert them to feature extractors (Encoders)
+
+        self.graph_gate = nn.Sequential(nn.Linear(gin_hidden_dim, gin_hidden_dim), nn.Sigmoid())
+        self.text_gate = nn.Sequential(nn.Linear(gin_hidden_dim, gin_hidden_dim), nn.Sigmoid())
+
+        self.bilinear = nn.Bilinear(gin_hidden_dim, gin_hidden_dim, gin_hidden_dim)
+
         self.graph_encoder.prediction_head[-1] = nn.Identity() 
         self.text_encoder.prediction_head = nn.Identity()
-        
-        # Concat dim: 256 (Graph) + 256 (Text) + 256 (Interaction) = 768 dimensions going into MLP
+
         concat_dim = gin_hidden_dim * 3
-        
-        # Unified MLP
+
         self.fusion_mlp = nn.Sequential(
             nn.Linear(concat_dim, mlp_hidden_dim),
             nn.BatchNorm1d(mlp_hidden_dim),
@@ -85,37 +109,43 @@ class HybridFusionModel(nn.Module):
         )
 
     def forward(self, graph_data, input_ids, attention_mask):
-        # 1. Extract raw embeddings
+        """Compute multitask predictions from graph and text inputs.
+
+        Args:
+            graph_data: Batched PyG graph data.
+            input_ids: Token IDs for the text branch.
+            attention_mask: Attention masks for the text branch.
+
+        Returns:
+            A tensor of multitask regression predictions.
+        """
+
         graph_embedding = self.graph_encoder(graph_data)
         raw_text_embedding = self.text_encoder(input_ids, attention_mask)
-        
-        # 2. Project Text to match Graph (768 -> 256)
+
         text_embedding = self.text_projector(raw_text_embedding)
-        
-        # 3. Calculate dynamic importances (0.0 to 1.0)
+
         g_weight = self.graph_gate(graph_embedding)
         t_weight = self.text_gate(text_embedding)
-        
-        # 4. Scale the embeddings by their importance
+
         weighted_graph = graph_embedding * g_weight
         weighted_text = text_embedding * t_weight
-        
-        # 5. Create explicit interaction and fuse
-        # (This now safely multiplies a 256-dim tensor by a 256-dim tensor)
-        interaction = weighted_graph * weighted_text
+
+        interaction = torch.relu(self.bilinear(weighted_graph, weighted_text))
         fused_embedding = torch.cat([weighted_graph, weighted_text, interaction], dim=1)
         
         return self.fusion_mlp(fused_embedding)
 
-# ==========================================
-# 4. MULTIPROCESSING WRAPPERS
-# ==========================================
 def run_gin_preprocessing():
+    """Build or reuse the cached GIN graph preprocessing artifacts for QM9-like data.
+
+    Args:
+        None.
+    """
+
     print("[Process 1] Starting GIN Preprocessing...")
-    # Import the pipeline directly
     from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
     
-    # Initialize it. If the cache doesn't exist, it will build it.
     pipeline = RelationalGeometryPipeline(
         root='GIN_2/data', 
         mol_csv_path='Dataset/New_QM9/molecule_properties.csv', 
@@ -126,6 +156,12 @@ def run_gin_preprocessing():
 
 
 def run_transformer_preprocessing():
+    """Build or reuse the cached ChemBERTa tokenization artifacts for the dataset.
+
+    Args:
+        None.
+    """
+
     print("[Process 2] Starting Transformer Preprocessing...")
     from Transformers_2.Utils.Tokeniser import Tokeniser
     
@@ -135,13 +171,25 @@ def run_transformer_preprocessing():
         max_length=64,
         use_cache=True 
     )
-    # Just run the tokenizer to build the cache, skip training
     tokeniser.run_tokenizer(verbose=False)
     print("[Process 2] Transformer Preprocessing Complete.")
 
 def masked_mse_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: torch.Tensor, beta=1.0) -> torch.Tensor:
-    # Use SmoothL1Loss instead of MSELoss
-    # 'beta' controls the threshold where it switches from squared to absolute loss
+    """Compute a NaN-masked SmoothL1 regression loss over valid target entries.
+
+    The mask is expected to contain 1s for valid targets and 0s for missing
+    targets. The beta parameter controls the transition point for SmoothL1Loss.
+
+    Args:
+        predictions: Model outputs with shape matching targets.
+        targets: Ground-truth multitask regression labels.
+        nan_mask: Binary mask indicating valid target entries.
+        beta: SmoothL1 transition point between L2 and L1 behavior.
+
+    Returns:
+        The average masked SmoothL1 loss across valid entries.
+    """
+
     loss_fn = nn.SmoothL1Loss(reduction='none', beta=beta)
     
     raw_loss = loss_fn(predictions, targets)
@@ -153,11 +201,7 @@ def masked_mse_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: 
     else:
         return torch.tensor(0.0, device=predictions.device, requires_grad=True)
 
-# ==========================================
-# 5. MAIN EXECUTION BLOCK
-# ==========================================
 if __name__ == '__main__':
-    # --- A. Parallel Preprocessing Phase ---
     print("Initiating parallel preprocessing for Graph and Text pipelines...\n")
     p1 = multiprocessing.Process(target=run_gin_preprocessing)
     p2 = multiprocessing.Process(target=run_transformer_preprocessing)
@@ -169,13 +213,11 @@ if __name__ == '__main__':
     p2.join()
     print("\nAll preprocessing finished. Proceeding to Data Loading...\n")
 
-   # --- B. Data Loading Phase ---
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
     
     print("Loading cached datasets from disk...")
     
-    # 1. Load PyG Graphs natively using the Pipeline
     from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
     pyg_dataset = RelationalGeometryPipeline(
         root='GIN_2/data', 
@@ -183,25 +225,19 @@ if __name__ == '__main__':
         atom_csv_path='Dataset/New_QM9/atom_properties.csv', 
         target_cols=TARGET_COLS
     )
-    # Extract the individual graphs into a standard list
     pyg_graph_list = [g for g in pyg_dataset]
 
-    # 2. Load Transformer Data
     transformer_data = torch.load('Transformers_2/outputs/cache/tokenized_dataset.pt', weights_only=False)
     
-    # 3. Build a dictionary mapping mol_id -> Graph for instant lookup
     graph_dict = {}
     for g in pyg_graph_list:
-    # If mol_id is a tensor, we use .item() to get the scalar value
         if torch.is_tensor(g.mol_id):
-        # .item() gets the number, then we cast to string for the match
              clean_id = str(g.mol_id.item())
         else:
             clean_id = str(g.mol_id)
     
         graph_dict[clean_id] = g
         
-    # 4. Extract Tokeniser data
     t_input_ids = transformer_data['input_ids']
     t_attention_masks = transformer_data['attention_mask']
     t_targets = transformer_data['labels']
@@ -209,7 +245,6 @@ if __name__ == '__main__':
     t_mol_ids = [str(m).strip() for m in transformer_data['mol_ids']]    
     t_scalers = transformer_data['scalers'] 
 
-    # 5. DYNAMIC ALIGNMENT: Only keep data that exists in BOTH pipelines
     aligned_graphs = []
     aligned_input_ids = []
     aligned_attention_masks = []
@@ -233,13 +268,11 @@ if __name__ == '__main__':
         raise ValueError("Zero molecules were aligned! Check if 'mol_id' in your Graph objects matches the IDs in 'tokenized_dataset.pt'.")
     print(f"Alignment complete! Kept {len(aligned_graphs)} valid multimodal molecules.")
 
-    # 6. Stack the text lists back into tensors
     aligned_input_ids = torch.stack(aligned_input_ids)
     aligned_attention_masks = torch.stack(aligned_attention_masks)
     aligned_targets = torch.stack(aligned_targets)
     aligned_nan_masks = torch.stack(aligned_nan_masks)
 
-    # 7. Create Dataset and Split
     full_dataset = HybridDataset(
         aligned_graphs, 
         aligned_input_ids, 
@@ -248,24 +281,21 @@ if __name__ == '__main__':
         aligned_nan_masks
     )
 
-    # Recalculate train/val split on the freshly aligned data
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     
-    # Use a fixed seed so the train/val split is identical every time you run main.py
     generator = torch.Generator().manual_seed(42)
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size], generator=generator)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
     
-    # --- C. Model & Optimizer Setup ---
     model = HybridFusionModel().to(device)
     
     optimizer = torch.optim.AdamW([
-        {'params': model.graph_encoder.parameters(), 'lr': 3e-4},
-        {'params': model.fusion_mlp.parameters(), 'lr': 3e-4},
-        {'params': model.text_encoder.parameters(), 'lr': 5e-5}
+        {'params': model.graph_encoder.parameters(), 'lr': 3e-4, 'weight_decay': 1e-3},
+        {'params': model.fusion_mlp.parameters(), 'lr': 3e-4, 'weight_decay': 1e-2},
+        {'params': model.text_encoder.parameters(), 'lr': 5e-5, 'weight_decay': 1e-5}
     ])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=3
@@ -277,7 +307,6 @@ if __name__ == '__main__':
     early_stop_counter = 0
     best_val_loss = float('inf')
 
-    # --- D. Training Engine ---
     print(f"\nStarting Hybrid Training on {device}...")
     for epoch in range(epochs):
         model.train()
@@ -309,7 +338,6 @@ if __name__ == '__main__':
             
         avg_train_loss = total_train_loss / len(train_loader)
 
-        # --- E. Validation Engine ---
         model.eval()
         total_val_loss = 0
         
@@ -328,8 +356,7 @@ if __name__ == '__main__':
                 predictions = model(graph_data, b_input_ids, b_attention_mask)
                 loss = masked_mse_loss(predictions, b_targets, b_nan_mask)
                 total_val_loss += loss.item()
-                
-                # Accumulate for physical metrics
+
                 all_preds.append(predictions.cpu())
                 all_targets.append(b_targets.cpu())
                 all_masks.append(b_nan_mask.cpu())
@@ -337,12 +364,10 @@ if __name__ == '__main__':
         avg_val_loss = total_val_loss / len(val_loader)
         scheduler.step(avg_val_loss)
         
-        # --- Physical Metric Calculation (Denormalization) ---
         y_pred = torch.cat(all_preds, dim=0).numpy()
         y_true = torch.cat(all_targets, dim=0).numpy()
         y_mask = torch.cat(all_masks, dim=0).numpy()
 
-        # Reverse the scaling using the dictionary
         for i, col in enumerate(TARGET_COLS):
             if col in t_scalers:
                 y_pred[:, i] = t_scalers[col].inverse_transform(y_pred[:, i].reshape(-1, 1)).flatten()
@@ -351,7 +376,6 @@ if __name__ == '__main__':
         mae_per_prop = []
         r2_per_prop = []
         
-        # Calculate metrics only on valid (non-NaN) entries
         for i in range(len(TARGET_COLS)):
             valid_idx = y_mask[:, i] == 1
             if valid_idx.sum() > 0:
@@ -366,10 +390,8 @@ if __name__ == '__main__':
         overall_mae = sum(mae_per_prop) / len(TARGET_COLS)
         overall_r2 = sum(r2_per_prop) / len(TARGET_COLS)
         
-        # --- Print the clean summary ---
         print(f"Epoch {epoch+1:02d}/{epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val MAE: {overall_mae:.4f} | Val R²: {overall_r2:.4f}")
         
-        # Print the detailed breakdown every 5 epochs or on a new best model
         if epoch == 0 or (epoch + 1) % 5 == 0 or avg_val_loss < best_val_loss:
             print("\n  --- Per-Property Validation Breakdown ---")
             for i in range(len(TARGET_COLS)):
@@ -379,7 +401,7 @@ if __name__ == '__main__':
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), "best_hybrid_model.pth")
-            early_stop_counter = 0 # Reset counter when a new best model is found
+            early_stop_counter = 0
             print("  --> Saved new best model.")
         else:
             early_stop_counter += 1
@@ -387,6 +409,5 @@ if __name__ == '__main__':
             
         if early_stop_counter >= patience:
             print(f"\nEarly stopping triggered at epoch {epoch+1}. Restoring best weights.")
-            # Load the best weights before exiting the loop
             model.load_state_dict(torch.load("best_hybrid_model.pth"))
             break
