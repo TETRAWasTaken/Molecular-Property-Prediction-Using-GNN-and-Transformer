@@ -53,7 +53,7 @@ class HybridFusionModel(nn.Module):
         self.graph_encoder.prediction_head[-1] = nn.Identity() 
         self.text_encoder.prediction_head = nn.Identity()
         
-        concat_dim = gin_hidden_dim + self.text_encoder.hidden_size
+        concat_dim = gin_hidden_dim * 3
         
         # Unified MLP
         self.fusion_mlp = nn.Sequential(
@@ -83,7 +83,8 @@ class HybridFusionModel(nn.Module):
         weighted_text = text_embedding * t_weight
         
         # Concatenate the optimized embeddings
-        fused_embedding = torch.cat([weighted_graph, weighted_text], dim=1)
+        interaction = weighted_graph * weighted_text
+        fused_embedding = torch.cat([weighted_graph, weighted_text, interaction],dim=1)
         return self.fusion_mlp(fused_embedding)
 
 # ==========================================
