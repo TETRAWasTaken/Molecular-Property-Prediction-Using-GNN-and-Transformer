@@ -47,7 +47,8 @@ class HybridFusionModel(nn.Module):
         
         self.graph_encoder = GIN(hidden_dim=gin_hidden_dim, output_dim=output_dim)
         self.text_encoder = StandaloneChemBERTa(model_name=transformer_model, num_targets=output_dim)
-        
+        self.graph_gate = nn.Sequential(nn.Linear(gin_hidden_dim, 1), nn.Sigmoid())
+        self.text_gate = nn.Sequential(nn.Linear(self.text_encoder.hidden_size, 1), nn.Sigmoid())
         # Convert them to feature extractors (Encoders)
         self.graph_encoder.prediction_head[-1] = nn.Identity() 
         self.text_encoder.prediction_head = nn.Identity()
@@ -72,9 +73,18 @@ class HybridFusionModel(nn.Module):
     def forward(self, graph_data, input_ids, attention_mask):
         graph_embedding = self.graph_encoder(graph_data)
         text_embedding = self.text_encoder(input_ids, attention_mask)
-        fused_embedding = torch.cat([graph_embedding, text_embedding], dim=1)
+        
+        # Calculate dynamic importances (0.0 to 1.0)
+        g_weight = self.graph_gate(graph_embedding)
+        t_weight = self.text_gate(text_embedding)
+        
+        # Scale the embeddings by their importance
+        weighted_graph = graph_embedding * g_weight
+        weighted_text = text_embedding * t_weight
+        
+        # Concatenate the optimized embeddings
+        fused_embedding = torch.cat([weighted_graph, weighted_text], dim=1)
         return self.fusion_mlp(fused_embedding)
-
 
 # ==========================================
 # 4. MULTIPROCESSING WRAPPERS
@@ -229,9 +239,14 @@ if __name__ == '__main__':
         {'params': model.fusion_mlp.parameters(), 'lr': 3e-4},
         {'params': model.text_encoder.parameters(), 'lr': 5e-5}
     ])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3, verbose=True
+    )
     
-    epochs = 15
+    epochs = 50
     freeze_transformer_epochs = 5
+    patience = 10
+    early_stop_counter = 0
     best_val_loss = float('inf')
 
     # --- D. Training Engine ---
@@ -293,7 +308,7 @@ if __name__ == '__main__':
                 all_masks.append(b_nan_mask.cpu())
                 
         avg_val_loss = total_val_loss / len(val_loader)
-        
+        scheduler.step(avg_val_loss)
         # --- Physical Metric Calculation (Denormalization) ---
         y_pred = torch.cat(all_preds, dim=0).numpy()
         y_true = torch.cat(all_targets, dim=0).numpy()
@@ -336,3 +351,14 @@ if __name__ == '__main__':
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), "best_hybrid_model.pth")
+            early_stop_counter = 0 # Reset counter when a new best model is found
+            print("  --> Saved new best model.")
+        else:
+            early_stop_counter += 1
+            print(f"  --> No improvement for {early_stop_counter} epochs.")
+            
+        if early_stop_counter >= patience:
+            print(f"\nEarly stopping triggered at epoch {epoch+1}. Restoring best weights.")
+            # Load the best weights before exiting the loop
+            model.load_state_dict(torch.load("best_hybrid_model.pth"))
+            break
