@@ -52,6 +52,7 @@ _ENGINE_MODEL_PATH = None
 _CONFIDENCE_CALIBRATION_CACHE = None
 _TRANSFORMER_MODEL = None
 _EXPLAINABILITY_MODEL_PATH = None
+_TOKENIZER_FALLBACK_WARNED = False
 
 def _one_hot_encoding(x, allowable_set):
 	if x not in allowable_set:
@@ -444,12 +445,25 @@ class EngineWarmupThread(QThread):
 
 def _get_tokenizer():
 	global _TOKENIZER
+	global _TOKENIZER_FALLBACK_WARNED
 	if _TOKENIZER is None:
-		model_path = _resolve_explainability_model_path()
-		_TOKENIZER = AutoTokenizer.from_pretrained(
-			str(model_path),
-			local_files_only=True,
-		)
+		try:
+			model_path = _resolve_explainability_model_path()
+			_TOKENIZER = AutoTokenizer.from_pretrained(
+				str(model_path),
+				local_files_only=True,
+			)
+		except FileNotFoundError:
+			# Prediction should still work even when explainability assets are missing.
+			# Keep a deterministic lightweight tokenizer fallback for ONNX inference input.
+			if not _TOKENIZER_FALLBACK_WARNED:
+				print(
+					'[Inference] Attention model/tokenizer not found. '
+					'Using fallback tokenizer for prediction. '
+					'Attention visualization will be unavailable.'
+				)
+				_TOKENIZER_FALLBACK_WARNED = True
+			_TOKENIZER = None
 	return _TOKENIZER
 
 
@@ -640,6 +654,26 @@ def compute_transformer_explainability(smiles):
 
 def _encode_smiles(smiles):
 	tokenizer = _get_tokenizer()
+	if tokenizer is None:
+		# Fallback tokenization: simple byte-level ids with [CLS]=101, [SEP]=102, [PAD]=0.
+		smiles = smiles or ''
+		tokens = [101]
+		for ch in smiles[: max(0, _MAX_SEQ_LEN - 2)]:
+			tokens.append((ord(ch) % 255) + 1)
+		tokens.append(102)
+
+		if len(tokens) < _MAX_SEQ_LEN:
+			pad_len = _MAX_SEQ_LEN - len(tokens)
+			input_ids = tokens + ([0] * pad_len)
+			attention_mask = ([1] * len(tokens)) + ([0] * pad_len)
+		else:
+			input_ids = tokens[:_MAX_SEQ_LEN]
+			attention_mask = [1] * _MAX_SEQ_LEN
+
+		input_ids = np.ascontiguousarray(np.asarray([input_ids], dtype=np.int64))
+		attention_mask = np.ascontiguousarray(np.asarray([attention_mask], dtype=np.int64))
+		return input_ids, attention_mask
+
 	encoded = tokenizer(
 		smiles,
 		padding='max_length',

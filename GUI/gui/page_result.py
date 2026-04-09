@@ -10,6 +10,26 @@ from PySide6.QtGui import QColor, QFont
 from gui.page_visualisation import MoleculeInspectorDialog
 from core.inference import compute_transformer_explainability
 
+
+class SortableTableWidgetItem(QTableWidgetItem):
+    """Table item that supports numeric sort keys."""
+
+    def __init__(self, text="", sort_value=None):
+        super().__init__(text)
+        self.sort_value = sort_value
+
+    def __lt__(self, other):
+        if isinstance(other, SortableTableWidgetItem):
+            left = self.sort_value
+            right = other.sort_value
+            if left is not None and right is not None:
+                return left < right
+            if left is not None and right is None:
+                return False
+            if left is None and right is not None:
+                return True
+        return super().__lt__(other)
+
 class ResultsPage(QWidget):
     # Signal to tell the main window to switch back to the input page
     go_back_signal = Signal()
@@ -33,9 +53,9 @@ class ResultsPage(QWidget):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(4)
         
-        title = QLabel("Shortlisted Molecules")
+        title = QLabel("Recommended Molecules")
         title_font = QFont()
-        title_font.setPointSize(20)
+        title_font.setPointSize(40)
         title_font.setWeight(QFont.Weight.Bold)
         title.setFont(title_font)
         title.setStyleSheet("color: #F2F4F8; letter-spacing: 0.5px;")
@@ -43,7 +63,7 @@ class ResultsPage(QWidget):
         
         subtitle = QLabel("Results from molecular screening. Double-click a row to visualize in 3D.")
         subtitle_font = QFont()
-        subtitle_font.setPointSize(11)
+        subtitle_font.setPointSize(16)
         subtitle.setFont(subtitle_font)
         subtitle.setStyleSheet("color: #9ca3af;")
         header_layout.addWidget(subtitle)
@@ -58,6 +78,7 @@ class ResultsPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(len(self.properties) + 3)
         self.table.setRowCount(0)
+        self.table.setSortingEnabled(True)
 
         self.table.doubleClicked.connect(self.on_row_double_clicked)
 
@@ -68,6 +89,7 @@ class ResultsPage(QWidget):
             self.confidence_band_column_name,
         ]
         self.table.setHorizontalHeaderLabels(headers)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
         
         # Set column widths - make SMILES column wider
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -129,6 +151,7 @@ class ResultsPage(QWidget):
 
     def populate_table(self):
         """A temp function to populate the table with dummy data for testing."""
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         self.table.setRowCount(2)
         self._export_rows = []
@@ -142,6 +165,9 @@ class ResultsPage(QWidget):
         # Add rows to table with proper formatting
         for row_idx, (smiles, values) in enumerate(data):
             self._set_row(row_idx, smiles, [f"{value:.3f}" for value in values], None)
+
+        self.table.setSortingEnabled(True)
+        self._apply_default_sort()
         
         # Update summary
         self.summary_label.setText(f"Showing {self.table.rowCount()} molecule(s)")
@@ -175,6 +201,7 @@ class ResultsPage(QWidget):
         """
         This function will read a CSV file and populate the table with its contents.
         """
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         self._export_rows = []
 
@@ -211,17 +238,23 @@ class ResultsPage(QWidget):
 
                 csv_name = Path(file_path).name
                 self.summary_label.setText(f"Loaded {row_count} molecule(s) from {csv_name}")
+                self.table.setSortingEnabled(True)
+                self._apply_default_sort()
                 return True
 
         except Exception as exc:
             self.summary_label.setText("No results yet")
             QMessageBox.warning(self, "CSV Import Failed", str(exc))
             return False
+        finally:
+            if not self.table.isSortingEnabled():
+                self.table.setSortingEnabled(True)
 
     def populate_from_predictions(self, predictions, filtered_out=0, failed=0):
         """
         Populate table using [(smiles, [12 regression outputs]), ...].
         """
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         self._export_rows = []
 
@@ -246,6 +279,9 @@ class ResultsPage(QWidget):
             self.table.insertRow(row_idx)
             self._set_row(row_idx, smiles, formatted, confidence)
             self._export_rows.append(self._build_export_row(smiles, numeric_values, confidence))
+
+        self.table.setSortingEnabled(True)
+        self._apply_default_sort()
 
         self.summary_label.setText(
             f"Showing {len(predictions)} molecule(s)"
@@ -279,7 +315,12 @@ class ResultsPage(QWidget):
         self.table.setItem(row_idx, 0, smiles_item)
 
         for col_idx, value in enumerate(values, start=1):
-            item = QTableWidgetItem(value)
+            sort_value = None
+            try:
+                sort_value = float(value)
+            except (ValueError, TypeError):
+                pass
+            item = SortableTableWidgetItem(value, sort_value)
             item.setTextAlignment(Qt.AlignCenter)
             item.setFont(QFont('Montserrat', 11))
             item.setForeground(QColor("#b0b0b0"))
@@ -307,19 +348,35 @@ class ResultsPage(QWidget):
                 f"warnings: {len(confidence.get('warnings') or [])}"
             )
 
-        conf_item = QTableWidgetItem(conf_text)
+        conf_sort_value = None
+        if isinstance(confidence, dict):
+            score = confidence.get("confidence_score")
+            if isinstance(score, (float, int)):
+                conf_sort_value = float(score)
+
+        conf_item = SortableTableWidgetItem(conf_text, conf_sort_value)
         conf_item.setTextAlignment(Qt.AlignCenter)
         conf_item.setFont(QFont('Montserrat', 11))
         conf_item.setForeground(QColor("#9ecbff"))
         conf_item.setToolTip(conf_tooltip)
         self.table.setItem(row_idx, conf_col, conf_item)
 
-        band_item = QTableWidgetItem(band_text)
+        band_sort_order = {
+            "LOW": 0,
+            "MEDIUM": 1,
+            "HIGH": 2,
+            "UNKNOWN": -1,
+        }
+        band_item = SortableTableWidgetItem(band_text, band_sort_order.get(band_text, -1))
         band_item.setTextAlignment(Qt.AlignCenter)
         band_item.setFont(QFont('Montserrat', 11))
         band_item.setForeground(band_color)
         band_item.setToolTip("Confidence band derived from confidence score")
         self.table.setItem(row_idx, band_col, band_item)
+
+    def _apply_default_sort(self):
+        conf_col = len(self.properties) + 1
+        self.table.sortItems(conf_col, Qt.DescendingOrder)
 
     def _classify_confidence_band(self, score):
         if score >= 85.0:

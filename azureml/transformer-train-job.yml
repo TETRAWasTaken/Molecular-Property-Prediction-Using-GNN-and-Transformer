@@ -1,0 +1,29 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: molecular-transformer-training
+description: Fine-tune the ChemBERTa transformer on molecular properties.
+experiment_name: molecular-property-transformer
+code: ..
+command: >-
+  bash -c "python -m pip install --no-cache-dir rdkit-pypi dask[dataframe] scikit-learn pandas numpy scipy transformers art torch &&
+  python Transformers_2/manual_run.py
+  --mol_csv ${{inputs.mol_csv}}
+  --force_rebuild
+  --save_path ${{outputs.model}}
+  --cache_path ${{outputs.cache_dir}}/tokenized_dataset.pt"
+resources:
+  instance_type: Standard_NV6
+  instance_count: 1
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
+inputs:
+  mol_csv:
+    type: uri_file
+    path: ../Dataset/New_QM9/molecule_properties.csv
+outputs:
+  model:
+    type: uri_file
+    path: azureml://datastores/workspaceblobstore/paths/molecular-transformer-training/model.pth
+  cache_dir:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/molecular-transformer-training/cache/

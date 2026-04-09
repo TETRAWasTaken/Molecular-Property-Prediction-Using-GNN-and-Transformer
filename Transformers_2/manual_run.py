@@ -61,6 +61,24 @@ class main:
         elif torch.backends.mps.is_available(): self.DEVICE = torch.device("mps")
         else: self.DEVICE = torch.device("cpu")
 
+    def _prepare_runtime_paths(self):
+        self.save_path = os.path.abspath(self.save_path)
+        if self.cache_path:
+            self.cache_path = os.path.abspath(self.cache_path)
+
+        save_dir = os.path.dirname(self.save_path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+
+        if self.cache_path:
+            cache_dir = os.path.dirname(self.cache_path)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+
+        if self.verbose:
+            print(f"Model checkpoint path: {self.save_path}")
+            print(f"Preprocessing cache path: {self.cache_path or self.paths.get_tokenized_dataset_path()}")
+
     def preprocess(self):
         self.tokeniser = Tokeniser(
             mol_path=self.mol_path,
@@ -267,6 +285,8 @@ class main:
         """Execute preprocessing, training, and evaluation end to end."""
         torch.manual_seed(self.SEED)
 
+        self._prepare_runtime_paths()
+
         tprint("Molecular Property Prediction", font="block-medium")
         tprint("Transformer Training Pipeline", font="block-medium")
         print(f"Training device: {self.DEVICE}")
@@ -282,11 +302,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Manual Transformer fine-tuning runner")
     parser.add_argument("--mol_csv", type=str, default="Dataset/New_QM9/molecule_properties.csv", help="Path to molecules CSV")
     parser.add_argument("--force_rebuild", action="store_true", help="Ignore cache and rebuild preprocessing")
+    parser.add_argument("--save_path", type=str, default=None, help="Path to save the best model checkpoint")
+    parser.add_argument("--cache_path", type=str, default=None, help="Path to save/load preprocessing cache")
+    parser.add_argument("--batch_size", type=int, default=32, help="Training batch size")
+    parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
+    parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
+    parser.add_argument("--max_length", type=int, default=64, help="Tokenizer max sequence length")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
     runner = main(
         mol_path=args.mol_csv,
         force_rebuild=args.force_rebuild,
+        save_path=args.save_path,
+        cache_path=args.cache_path,
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        max_length=args.max_length,
+        seed=args.seed,
     )
     runner.run()
 
