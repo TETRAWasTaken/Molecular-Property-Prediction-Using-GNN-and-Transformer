@@ -1,4 +1,5 @@
 import os
+os.environ["HF_HUB_OFFLINE"] = "1"
 import torch
 import torch.nn as nn
 import multiprocessing
@@ -6,6 +7,7 @@ import subprocess
 from sklearn.metrics import mean_absolute_error, r2_score
 from torch.utils.data import Dataset, random_split
 from torch_geometric.loader import DataLoader
+
 
 # 1. Modular Imports: Pull directly from your standalone folders
 from GIN_2.Utils.GIN import GIN
@@ -266,7 +268,7 @@ if __name__ == '__main__':
         {'params': model.text_encoder.parameters(), 'lr': 5e-5}
     ])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3, verbose=True
+        optimizer, mode='min', factor=0.5, patience=3
     )
     
     epochs = 50
