@@ -8,7 +8,7 @@ metrics with early stopping.
 
 import os
 
-os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import multiprocessing
 
@@ -20,6 +20,12 @@ from torch_geometric.loader import DataLoader
 
 from GIN_2.Utils.GIN import GIN
 from Transformers_2.Utils.Transformer import StandaloneChemBERTa
+
+
+MOLECULE_CSV_PATH = os.environ.get("MOLECULE_CSV_PATH", "Dataset/New_QM9/molecule_properties.csv")
+ATOM_CSV_PATH = os.environ.get("ATOM_CSV_PATH", "Dataset/New_QM9/atom_properties.csv")
+TOKENIZED_CACHE_PATH = os.environ.get("TOKENIZED_CACHE_PATH", "Transformers_2/outputs/cache/tokenized_dataset.pt")
+HYBRID_MODEL_OUTPUT_PATH = os.environ.get("HYBRID_MODEL_OUTPUT_PATH", "best_hybrid_model.pth")
 
 
 class HybridDataset(Dataset):
@@ -148,8 +154,8 @@ def run_gin_preprocessing():
     
     pipeline = RelationalGeometryPipeline(
         root='GIN_2/data', 
-        mol_csv_path='Dataset/New_QM9/molecule_properties.csv', 
-        atom_csv_path='Dataset/New_QM9/atom_properties.csv', 
+        mol_csv_path=MOLECULE_CSV_PATH,
+        atom_csv_path=ATOM_CSV_PATH,
         target_cols=['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
     )
     print("[Process 1] GIN Preprocessing Complete.")
@@ -166,10 +172,11 @@ def run_transformer_preprocessing():
     from Transformers_2.Utils.Tokeniser import Tokeniser
     
     tokeniser = Tokeniser(
-        mol_path='Dataset/New_QM9/molecule_properties.csv',
+        mol_path=MOLECULE_CSV_PATH,
         model_name="seyonec/ChemBERTa-zinc-base-v1",
         max_length=64,
-        use_cache=True 
+        use_cache=True,
+        cache_path=TOKENIZED_CACHE_PATH,
     )
     tokeniser.run_tokenizer(verbose=False)
     print("[Process 2] Transformer Preprocessing Complete.")
@@ -221,13 +228,13 @@ if __name__ == '__main__':
     from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
     pyg_dataset = RelationalGeometryPipeline(
         root='GIN_2/data', 
-        mol_csv_path='Dataset/New_QM9/molecule_properties.csv', 
-        atom_csv_path='Dataset/New_QM9/atom_properties.csv', 
+        mol_csv_path=MOLECULE_CSV_PATH,
+        atom_csv_path=ATOM_CSV_PATH,
         target_cols=TARGET_COLS
     )
     pyg_graph_list = [g for g in pyg_dataset]
 
-    transformer_data = torch.load('Transformers_2/outputs/cache/tokenized_dataset.pt', weights_only=False)
+    transformer_data = torch.load(TOKENIZED_CACHE_PATH, weights_only=False)
     
     graph_dict = {}
     for g in pyg_graph_list:
@@ -400,7 +407,10 @@ if __name__ == '__main__':
         
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), "best_hybrid_model.pth")
+            output_dir = os.path.dirname(HYBRID_MODEL_OUTPUT_PATH)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            torch.save(model.state_dict(), HYBRID_MODEL_OUTPUT_PATH)
             early_stop_counter = 0
             print("  --> Saved new best model.")
         else:
@@ -409,5 +419,5 @@ if __name__ == '__main__':
             
         if early_stop_counter >= patience:
             print(f"\nEarly stopping triggered at epoch {epoch+1}. Restoring best weights.")
-            model.load_state_dict(torch.load("best_hybrid_model.pth"))
+            model.load_state_dict(torch.load(HYBRID_MODEL_OUTPUT_PATH))
             break
