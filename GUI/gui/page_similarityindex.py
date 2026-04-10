@@ -24,6 +24,29 @@ from gui.page_visualisation import MoleculeInspectorDialog
 from core.inference import compute_transformer_explainability
 
 
+SIMILARITY_BUTTON_STYLE = """
+	QPushButton {
+		background-color: #CC5500;
+		color: #FAF9F6;
+		border: none;
+		border-radius: 8px;
+		padding: 10px 16px;
+		font-weight: 700;
+		letter-spacing: 0.4px;
+	}
+	QPushButton:hover {
+		background-color: #B34700;
+	}
+	QPushButton:pressed {
+		background-color: #8F3B00;
+	}
+	QPushButton:disabled {
+		background-color: #D9B49A;
+		color: #F8F2EC;
+	}
+"""
+
+
 class SortableTableWidgetItem(QTableWidgetItem):
 	"""Table item supporting numeric sorting while preserving display text."""
 
@@ -78,13 +101,13 @@ class SimilarityIndexPage(QWidget):
 		title_font.setPointSize(40)
 		title_font.setWeight(QFont.Weight.Bold)
 		title.setFont(title_font)
-		title.setStyleSheet("color: #f2f4f8; font-size: 40px; font-weight: 800; letter-spacing: 0.5px;")
+		title.setStyleSheet("color: #6C3B1E; font-size: 40px; font-weight: 800; letter-spacing: 0.5px;")
 		root_layout.addWidget(title)
 
 		subtitle = QLabel(
 			"Predict properties for one query molecule and return the top most similar molecules from your dataset."
 		)
-		subtitle.setStyleSheet("color: #9ca3af; font-size: 16px;")
+		subtitle.setStyleSheet("color: #7A6657; font-size: 16px;")
 		subtitle.setToolTip("Double-click any result row to open 3D visualization.")
 		root_layout.addWidget(subtitle)
 
@@ -93,7 +116,7 @@ class SimilarityIndexPage(QWidget):
 
 		controls_box = QGroupBox("Inputs")
 		controls_box.setGraphicsEffect(
-			Shadow(color=QColor(255, 255, 255, 18), blur_radius=20, x_offset=0, y_offset=0).effect
+			Shadow(color=QColor(122, 90, 66, 40), blur_radius=20, x_offset=0, y_offset=0).effect
 		)
 		controls_layout = QVBoxLayout(controls_box)
 		controls_layout.setSpacing(10)
@@ -120,11 +143,12 @@ class SimilarityIndexPage(QWidget):
 		csv_label.setFont(query_label_font)
 		self.btn_upload = QPushButton("Upload Dataset CSV")
 		self.btn_upload.setGraphicsEffect(
-			Glow(color=QColor(91, 110, 255, 90), blur_radius=15, x_offset=0, y_offset=0).glow
+			Glow(color=QColor(204, 85, 0, 110), blur_radius=15, x_offset=0, y_offset=0).glow
 		)
+		self.btn_upload.setStyleSheet(SIMILARITY_BUTTON_STYLE)
 		self.btn_upload.setMinimumHeight(38)
 		self.lbl_file = QLabel("No CSV selected")
-		self.lbl_file.setStyleSheet("color: #9ca3af; font-size: 12px;")
+		self.lbl_file.setStyleSheet("color: #7A6657; font-size: 12px;")
 
 		paste_label = QLabel("Dataset via pasted SMILES (comma or newline separated)")
 		paste_label.setFont(query_label_font)
@@ -139,11 +163,13 @@ class SimilarityIndexPage(QWidget):
 		run_font.setPointSize(12)
 		self.btn_run.setFont(run_font)
 		self.btn_run.setGraphicsEffect(
-			Glow(color=QColor(91, 110, 255, 120), blur_radius=20, x_offset=0, y_offset=0).glow
+			Glow(color=QColor(204, 85, 0, 140), blur_radius=20, x_offset=0, y_offset=0).glow
 		)
+		self.btn_run.setStyleSheet(SIMILARITY_BUTTON_STYLE)
 
 		self.btn_home = QPushButton("Home")
 		self.btn_home.setMinimumHeight(38)
+		self.btn_home.setStyleSheet(SIMILARITY_BUTTON_STYLE)
 
 		controls_layout.addWidget(query_label)
 		controls_layout.addWidget(self.query_input)
@@ -168,7 +194,7 @@ class SimilarityIndexPage(QWidget):
 
 		self.query_properties_label = QLabel("Query properties: -")
 		self.query_properties_label.setWordWrap(True)
-		self.query_properties_label.setStyleSheet("color: #cfd5df;")
+		self.query_properties_label.setStyleSheet("color: #7A6657;")
 
 		self.results_table = QTableWidget(0, 6 + len(self.properties))
 		self.results_table.setSortingEnabled(True)
@@ -178,6 +204,36 @@ class SimilarityIndexPage(QWidget):
 		self.results_table.setAlternatingRowColors(True)
 		self.results_table.setToolTip("Double-click a molecule row to open 3D visualization.")
 		self.results_table.doubleClicked.connect(self.on_row_double_clicked)
+		self.results_table.setStyleSheet("""
+			QTableWidget {
+				background-color: #FFFDF8;
+				alternate-background-color: #F6EEE4;
+				gridline-color: #E2CDBC;
+				border: 1px solid #E0C7B1;
+				border-radius: 8px;
+			}
+			QTableWidget::item {
+				padding: 8px;
+				border-bottom: 1px solid #E8D8CA;
+				color: #4A3A2A;
+			}
+			QTableWidget::item:selected {
+				background-color: #F1D1B9;
+				color: #4A3A2A;
+			}
+			QTableWidget::item:hover {
+				background-color: #F7E5D8;
+			}
+			QHeaderView::section {
+				background-color: #CC5500;
+				color: #FAF9F6;
+				padding: 10px;
+				border: none;
+				border-bottom: 2px solid #B34700;
+				font-weight: 600;
+				font-size: 12px;
+			}
+		""")
 		headers = [
 			"RANK",
 			"SMILES",
@@ -192,7 +248,7 @@ class SimilarityIndexPage(QWidget):
 		self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
 
 		self.status_label = QLabel("No similarity search executed yet")
-		self.status_label.setStyleSheet("color: #9ca3af; font-size: 12px; font-style: italic;")
+		self.status_label.setStyleSheet("color: #7A6657; font-size: 12px; font-style: italic;")
 
 		self.progress_bar = QProgressBar()
 		self.progress_bar.setRange(0, 0)
@@ -203,10 +259,10 @@ class SimilarityIndexPage(QWidget):
 			QProgressBar {
 				border: none;
 				border-radius: 3px;
-				background-color: #1f2329;
+				background-color: #F3E8DE;
 			}
 			QProgressBar::chunk {
-				background-color: #5B6EFF;
+				background-color: #CC5500;
 				border-radius: 3px;
 			}
 			"""
@@ -232,7 +288,7 @@ class SimilarityIndexPage(QWidget):
 			self.uploaded_csv_path = file_name
 			short_name = file_name.split("/")[-1]
 			self.lbl_file.setText(f"Selected: {short_name}")
-			self.lbl_file.setStyleSheet("color: #10b981; font-size: 12px;")
+			self.lbl_file.setStyleSheet("color: #A94F0A; font-size: 12px;")
 
 	def _parse_pasted_smiles(self):
 		raw_text = self.dataset_text.toPlainText().strip()

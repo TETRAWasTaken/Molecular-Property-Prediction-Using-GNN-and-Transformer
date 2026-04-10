@@ -1,16 +1,14 @@
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QFormLayout,
-    QDoubleSpinBox, QScrollArea, QLabel, QTextEdit, QPushButton, QFileDialog,
     QGraphicsDropShadowEffect
 )
 from PySide6.QtGui import QColor
-from PySide6.QtCore import QPropertyAnimation, Signal
+from PySide6.QtCore import QPropertyAnimation
 
 class Shadow:
     """
     This class creates a shadow effect that can be applied to any widget.
     """
-    def __init__(self, color=QColor(187, 134, 252, 100),
+    def __init__(self, color=QColor(122, 90, 66, 90),
                 blur_radius=35,
                 x_offset=0,
                 y_offset=0
@@ -41,7 +39,7 @@ class Glow:
     """
     This class creates a glow effect that can be applied to any widget.
     """
-    def __init__(self, color=QColor(187, 134, 252, 100), 
+    def __init__(self, color=QColor(204, 85, 0, 110), 
                  blur_radius=25, 
                  x_offset=0, 
                  y_offset=0

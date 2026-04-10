@@ -1,9 +1,7 @@
-from matplotlib.pylab import beta
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from typing import Any, Optional
-import numpy as np
 from sklearn.metrics import mean_absolute_error, r2_score
 
 from .Transformer import StandaloneChemBERTa

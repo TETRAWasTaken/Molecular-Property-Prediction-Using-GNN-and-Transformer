@@ -46,7 +46,7 @@ def generate_3d_molecule_html(
     atom_contributions = atom_contributions or []
     
     # Standard CPK colors for basic atoms
-    color_map = {1: '#FFFFFF', 6: '#808080', 7: '#0000FF', 8: '#FF0000', 9: '#00FF00'}
+    color_map = {1: '#FAF9F6', 6: '#8A8178', 7: '#3A68B7', 8: '#D94F2A', 9: '#6BBF59'}
     
     for i in range(mol.GetNumAtoms()):
         pos = conf.GetAtomPosition(i)
@@ -57,7 +57,7 @@ def generate_3d_molecule_html(
         xs.append(pos.x)
         ys.append(pos.y)
         zs.append(pos.z)
-        atom_colors.append(color_map.get(atomic_num, '#FF00FF')) # Default pink for unknown
+        atom_colors.append(color_map.get(atomic_num, '#CC5500'))
         if i < len(atom_contributions):
             contribution = float(atom_contributions[i])
             hover_texts.append(
@@ -108,7 +108,7 @@ def generate_3d_molecule_html(
     fig.add_trace(go.Scatter3d(
         x=base_b_xs, y=base_b_ys, z=base_b_zs,
         mode='lines',
-        line=dict(color='rgba(160, 160, 160, 0.18)' if attention_mode else '#A0A0A0', width=4),
+        line=dict(color='rgba(122, 90, 66, 0.20)' if attention_mode else '#BFAFA0', width=4),
         hoverinfo='none',
         name='Bonds',
         showlegend=True
@@ -118,7 +118,7 @@ def generate_3d_molecule_html(
         fig.add_trace(go.Scatter3d(
             x=focus_b_xs, y=focus_b_ys, z=focus_b_zs,
             mode='lines',
-            line=dict(color='#FFB020', width=8),
+            line=dict(color='#CC5500', width=8),
             hoverinfo='none',
             name='Attention Focus',
             showlegend=True
@@ -128,7 +128,7 @@ def generate_3d_molecule_html(
     fig.add_trace(go.Scatter3d(
         x=xs, y=ys, z=zs,
         mode='markers',
-        marker=dict(size=12, color=atom_colors, line=dict(width=1, color='#000000')),
+        marker=dict(size=12, color=atom_colors, line=dict(width=1, color='#6B5A4D')),
         text=hover_texts,
         hoverinfo='text',
         name='Atoms',
@@ -138,10 +138,10 @@ def generate_3d_molecule_html(
     # Apply Dark Mode Styling
     fig.update_layout(
         template="plotly_dark",
-        paper_bgcolor="#1e1e1e",
+        paper_bgcolor="#FAF9F6",
         scene=dict(
             xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False),
-            bgcolor="#1e1e1e"
+            bgcolor="#FAF9F6"
         ),
         margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
@@ -149,10 +149,10 @@ def generate_3d_molecule_html(
             y=0.99,
             xanchor='left',
             yanchor='top',
-            bgcolor='rgba(26,28,43,0.75)',
-            bordercolor='#3A3F49',
+            bgcolor='rgba(255,253,248,0.88)',
+            bordercolor='#E0C7B1',
             borderwidth=1,
-            font=dict(color="#F2F4F8", size=11)
+            font=dict(color="#4A3A2A", size=11)
         )
     )
 

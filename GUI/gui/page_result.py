@@ -11,6 +11,30 @@ from gui.page_visualisation import MoleculeInspectorDialog
 from core.inference import compute_transformer_explainability
 
 
+RESULTS_BUTTON_STYLE = """
+    QPushButton {
+        background-color: #CC5500;
+        color: #FAF9F6;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: 600;
+        font-size: 13px;
+        letter-spacing: 0.4px;
+    }
+    QPushButton:hover {
+        background-color: #B34700;
+    }
+    QPushButton:pressed {
+        background-color: #8F3B00;
+    }
+    QPushButton:disabled {
+        background-color: #D9B49A;
+        color: #F8F2EC;
+    }
+"""
+
+
 class SortableTableWidgetItem(QTableWidgetItem):
     """Table item that supports numeric sort keys."""
 
@@ -58,14 +82,14 @@ class ResultsPage(QWidget):
         title_font.setPointSize(40)
         title_font.setWeight(QFont.Weight.Bold)
         title.setFont(title_font)
-        title.setStyleSheet("color: #F2F4F8; letter-spacing: 0.5px; font-size: 40px; font-weight: 800;")
+        title.setStyleSheet("color: #6C3B1E; letter-spacing: 0.5px; font-size: 40px; font-weight: 800;")
         header_layout.addWidget(title)
         
         subtitle = QLabel("Results from molecular screening. Double-click a row to visualize in 3D.")
         subtitle_font = QFont()
         subtitle_font.setPointSize(16)
         subtitle.setFont(subtitle_font)
-        subtitle.setStyleSheet("color: #9ca3af;")
+        subtitle.setStyleSheet("color: #7A6657;")
         header_layout.addWidget(subtitle)
         
         main_layout.addWidget(header_frame)
@@ -79,6 +103,36 @@ class ResultsPage(QWidget):
         self.table.setColumnCount(len(self.properties) + 3)
         self.table.setRowCount(0)
         self.table.setSortingEnabled(True)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #FFFDF8;
+                alternate-background-color: #F6EEE4;
+                gridline-color: #E2CDBC;
+                border: 1px solid #E0C7B1;
+                border-radius: 8px;
+            }
+            QTableWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #E8D8CA;
+                color: #4A3A2A;
+            }
+            QTableWidget::item:selected {
+                background-color: #F1D1B9;
+                color: #4A3A2A;
+            }
+            QTableWidget::item:hover {
+                background-color: #F7E5D8;
+            }
+            QHeaderView::section {
+                background-color: #CC5500;
+                color: #FAF9F6;
+                padding: 10px;
+                border: none;
+                border-bottom: 2px solid #B34700;
+                font-weight: 600;
+                font-size: 12px;
+            }
+        """)
 
         self.table.doubleClicked.connect(self.on_row_double_clicked)
 
@@ -105,7 +159,7 @@ class ResultsPage(QWidget):
         
         # Summary Label
         self.summary_label = QLabel("No results yet")
-        self.summary_label.setStyleSheet("color: #9ca3af; font-size: 12px; font-style: italic;")
+        self.summary_label.setStyleSheet("color: #7A6657; font-size: 12px; font-style: italic;")
         main_layout.addWidget(self.summary_label)
         
         # Loading Indicator
@@ -117,10 +171,10 @@ class ResultsPage(QWidget):
             QProgressBar {
                 border: none;
                 border-radius: 3px;
-                background-color: #1f2329;
+                background-color: #F3E8DE;
             }
             QProgressBar::chunk {
-                background-color: #5B6EFF;
+                background-color: #CC5500;
                 border-radius: 3px;
             }
         """)
@@ -134,10 +188,12 @@ class ResultsPage(QWidget):
         self.btn_back = QPushButton("← Back to Search")
         self.btn_back.setMinimumHeight(40)
         self.btn_back.setMinimumWidth(140)
+        self.btn_back.setStyleSheet(RESULTS_BUTTON_STYLE)
         
         self.btn_export = QPushButton("Export to CSV")
         self.btn_export.setMinimumHeight(40)
         self.btn_export.setMinimumWidth(140)
+        self.btn_export.setStyleSheet(RESULTS_BUTTON_STYLE)
         
         btn_layout.addWidget(self.btn_back)
         btn_layout.addStretch()
@@ -311,7 +367,7 @@ class ResultsPage(QWidget):
     def _set_row(self, row_idx, smiles, values, confidence=None):
         smiles_item = QTableWidgetItem(smiles)
         smiles_item.setFont(QFont('Monaco', 11))
-        smiles_item.setForeground(QColor("#e0e0e0"))
+        smiles_item.setForeground(QColor("#4A3A2A"))
         self.table.setItem(row_idx, 0, smiles_item)
 
         for col_idx, value in enumerate(values, start=1):
@@ -323,7 +379,7 @@ class ResultsPage(QWidget):
             item = SortableTableWidgetItem(value, sort_value)
             item.setTextAlignment(Qt.AlignCenter)
             item.setFont(QFont('Montserrat', 11))
-            item.setForeground(QColor("#b0b0b0"))
+            item.setForeground(QColor("#5E4A3B"))
             self.table.setItem(row_idx, col_idx, item)
 
         conf_col = len(self.properties) + 1
@@ -331,7 +387,7 @@ class ResultsPage(QWidget):
         conf_text = "-"
         band_text = "UNKNOWN"
         conf_tooltip = "Confidence unavailable"
-        band_color = QColor("#9ca3af")
+        band_color = QColor("#7A6657")
         if isinstance(confidence, dict):
             score = confidence.get("confidence_score")
             used = confidence.get("n_conformers_used")
@@ -357,7 +413,7 @@ class ResultsPage(QWidget):
         conf_item = SortableTableWidgetItem(conf_text, conf_sort_value)
         conf_item.setTextAlignment(Qt.AlignCenter)
         conf_item.setFont(QFont('Montserrat', 11))
-        conf_item.setForeground(QColor("#9ecbff"))
+        conf_item.setForeground(QColor("#A94F0A"))
         conf_item.setToolTip(conf_tooltip)
         self.table.setItem(row_idx, conf_col, conf_item)
 
@@ -382,7 +438,7 @@ class ResultsPage(QWidget):
         if score >= 85.0:
             return "HIGH", QColor("#22c55e")
         if score >= 60.0:
-            return "MEDIUM", QColor("#f59e0b")
+            return "MEDIUM", QColor("#CC5500")
         return "LOW", QColor("#ef4444")
 
     def _build_export_row(self, smiles, values, confidence):
@@ -408,7 +464,7 @@ class ResultsPage(QWidget):
             return row
 
         score = confidence.get("confidence_score")
-        band_text, _ = self._classify_confidence_band(float(score)) if isinstance(score, (float, int)) else ("UNKNOWN", QColor("#9ca3af"))
+        band_text, _ = self._classify_confidence_band(float(score)) if isinstance(score, (float, int)) else ("UNKNOWN", QColor("#7A6657"))
         row["CONF_SCORE"] = "" if score is None else float(score)
         row["CONF_BAND"] = band_text
         row["CONF_MODE"] = confidence.get("mode", "")

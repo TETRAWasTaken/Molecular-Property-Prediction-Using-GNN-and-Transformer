@@ -25,7 +25,6 @@ from GUI.core.inference import (
     cleanup_hybrid_engine,
 )
 from rdkit import Chem
-from rdkit.Chem import AllChem
 
 
 class TestOneHotEncoding(unittest.TestCase):

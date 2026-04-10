@@ -10,22 +10,30 @@ import os
 from pathlib import Path
 
 existing_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
-if "--disable-skia-graphite" not in existing_flags:
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
-        f"{existing_flags} --disable-skia-graphite".strip()
-    )
+# Mitigate QtWebEngine Chromium Skia mailbox errors on macOS while keeping WebGL on.
+flags_to_add = [
+    "--disable-skia-graphite",
+    "--disable-features=UseSkiaRenderer",
+]
+if os.environ.get("GUI_FORCE_SOFTWARE_WEBENGINE", "0") == "1":
+    flags_to_add.extend(["--disable-gpu", "--disable-gpu-compositing"])
+updated_flags = existing_flags
+for flag in flags_to_add:
+    if flag not in updated_flags:
+        updated_flags = f"{updated_flags} {flag}".strip()
+os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = updated_flags
 
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from gui.main_window import MainWindow
 from PySide6.QtGui import QFontDatabase, Qt
-from PySide6.QtCore import QThread, QTimer, QUrl
+from PySide6.QtCore import QTimer, QUrl
 from core.inference import EngineWarmupThread
 
 stylesheet = """
 QMainWindow {
-    background-color: #1A1C22;
+    background-color: #FAF9F6;
 }
 
 QWidget {
@@ -34,14 +42,14 @@ QWidget {
 }
 
 QLabel {
-    color: #d1d1d1;
+    color: #4A3A2A;
 }
 
 QGroupBox {
-    background-color: #252a32;
-    border: 2px solid #3A3F49;
+    background-color: #FFFDF8;
+    border: 2px solid #E0C7B1;
     border-radius: 12px;
-    color: #ffffff;
+    color: #4A3A2A;
     margin-top: 18px;
     padding-top: 14px;
     padding-left: 12px;
@@ -59,43 +67,43 @@ QGroupBox::title {
     top: -2px;
     padding: 6px 12px;
     border-radius: 6px;
-    background-color: #242830;
-    color: #F2F4F8;
+    background-color: #CC5500;
+    color: #FAF9F6;
     letter-spacing: 0.8px;
 }
 
 QTextEdit {
-    background-color: #1f2329;
-    border: 2px solid #3A3F49;
+    background-color: #FFF8F2;
+    border: 2px solid #E0C7B1;
     border-radius: 8px;
-    color: #e0e0e0;
+    color: #4A3A2A;
     padding: 8px;
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
     font-size: 13px;
 }
 
 QTextEdit:focus {
-    border: 2px solid #5B6EFF;
-    background-color: #222830;
+    border: 2px solid #CC5500;
+    background-color: #FFFDF8;
 }
 
 QDoubleSpinBox, QSpinBox, QLineEdit {
-    background-color: #1f2329;
-    border: 2px solid #3A3F49;
+    background-color: #FFF8F2;
+    border: 2px solid #E0C7B1;
     border-radius: 6px;
-    color: #e0e0e0;
+    color: #4A3A2A;
     padding: 6px 8px;
     font-size: 12px;
 }
 
 QDoubleSpinBox:focus, QSpinBox:focus, QLineEdit:focus {
-    border: 2px solid #5B6EFF;
-    background-color: #222830;
+    border: 2px solid #CC5500;
+    background-color: #FFFDF8;
 }
 
 QPushButton {
-    background-color: #0d1661;
-    color: #ffffff;
+    background-color: #CC5500;
+    color: #FAF9F6;
     border: none;
     border-radius: 8px;
     padding: 10px 20px;
@@ -105,11 +113,11 @@ QPushButton {
 }
 
 QPushButton:hover {
-    background-color: #1521a0;
+    background-color: #B34700;
 }
 
 QPushButton:pressed {
-    background-color: #0f1970;
+    background-color: #8F3B00;
 }
 
 QPushButton#runButton {
@@ -120,33 +128,33 @@ QPushButton#runButton {
 }
 
 QTableWidget {
-    background-color: #1f2329;
-    alternate-background-color: #252a32;
-    gridline-color: #3A3F49;
-    border: 1px solid #3A3F49;
+    background-color: #FFFDF8;
+    alternate-background-color: #F6EEE4;
+    gridline-color: #E2CDBC;
+    border: 1px solid #E0C7B1;
     border-radius: 8px;
 }
 
 QTableWidget::item {
     padding: 8px;
-    border-bottom: 1px solid #2d3238;
+    border-bottom: 1px solid #E8D8CA;
 }
 
 QTableWidget::item:selected {
-    background-color: #1521a0;
-    color: #ffffff;
+    background-color: #F1D1B9;
+    color: #4A3A2A;
 }
 
 QTableWidget::item:hover {
-    background-color: #2d3238;
+    background-color: #F7E5D8;
 }
 
 QHeaderView::section {
-    background-color: #0d1661;
-    color: #ffffff;
+    background-color: #CC5500;
+    color: #FAF9F6;
     padding: 10px;
     border: none;
-    border-bottom: 2px solid #5B6EFF;
+    border-bottom: 2px solid #B34700;
     font-weight: 600;
     font-size: 12px;
     text-transform: uppercase;
@@ -154,39 +162,39 @@ QHeaderView::section {
 }
 
 QTableWidget:focus {
-    border: 2px solid #5B6EFF;
+    border: 2px solid #CC5500;
 }
 
 QScrollBar:vertical {
-    background-color: #1f2329;
+    background-color: #F3E8DE;
     width: 10px;
     border-radius: 5px;
 }
 
 QScrollBar::handle:vertical {
-    background-color: #5B6EFF;
+    background-color: #CC5500;
     border-radius: 5px;
     min-height: 20px;
 }
 
 QScrollBar::handle:vertical:hover {
-    background-color: #7a8dff;
+    background-color: #B34700;
 }
 
 QScrollBar:horizontal {
-    background-color: #1f2329;
+    background-color: #F3E8DE;
     height: 10px;
     border-radius: 5px;
 }
 
 QScrollBar::handle:horizontal {
-    background-color: #5B6EFF;
+    background-color: #CC5500;
     border-radius: 5px;
     min-width: 20px;
 }
 
 QScrollBar::handle:horizontal:hover {
-    background-color: #7a8dff;
+    background-color: #B34700;
 }
 """
 
@@ -285,8 +293,6 @@ def main():
     else:
         print(f"[Splash] Video not found: {video_splash_path}")
 
-    engine_warmup_thread = EngineWarmupThread()
-
     def _on_engine_ready(model_path):
         """Report successful warm-up completion.
 
@@ -305,17 +311,30 @@ def main():
 
         print(f"[Engine] Warm-up failed: {message}")
 
-    engine_warmup_thread.ready.connect(_on_engine_ready)
-    engine_warmup_thread.error.connect(_on_engine_error)
-    engine_warmup_thread.start()
-
     app.processEvents()
     app.setStyle("Fusion")
 
     window = MainWindow()
     window.resize(1920, 1080)
     window.setWindowTitle("Molecular Property Prediction and Recommendation")
-    window.engine_warmup_thread = engine_warmup_thread
+
+    def _cleanup_on_quit():
+        """Drain background tasks before Qt tears down widgets."""
+
+        window.cleanup_background_tasks()
+        if video_splash is not None:
+            video_splash.stop()
+
+    app.aboutToQuit.connect(_cleanup_on_quit)
+
+    def _start_engine_warmup():
+        """Start model warm-up after the UI is already visible."""
+
+        engine_warmup_thread = EngineWarmupThread()
+        engine_warmup_thread.ready.connect(_on_engine_ready)
+        engine_warmup_thread.error.connect(_on_engine_error)
+        window.engine_warmup_thread = engine_warmup_thread
+        engine_warmup_thread.start()
 
     def _show_main_window():
         """Display the main window and stop the splash screen if it is running.
@@ -327,6 +346,7 @@ def main():
         window.show()
         if video_splash is not None:
             video_splash.stop()
+        QTimer.singleShot(0, _start_engine_warmup)
 
     QTimer.singleShot(8000, _show_main_window)
     sys.exit(app.exec())

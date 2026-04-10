@@ -5,53 +5,81 @@ from PySide6.QtWidgets import QStyle, QStyleOption, QWidget, QVBoxLayout, QHBoxL
 from gui.effects import Shadow, Glow
 
 
+HOME_BUTTON_STYLE = """
+    QPushButton {
+        background-color: #CC5500;
+        color: #FAF9F6;
+        border: none;
+        border-radius: 10px;
+        padding: 12px 22px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        font-size: 22px;
+    }
+    QPushButton:hover {
+        background-color: #B34700;
+    }
+    QPushButton:pressed {
+        background-color: #8F3B00;
+    }
+"""
+
+
 class HomePage(QWidget):
     """Entry page that routes users to screening or similarity workflows."""
 
     open_screening_signal = Signal()
     open_similarity_signal = Signal()
+    open_single_predict_signal = Signal()
 
     def __init__(self):
         super().__init__()
         self.setObjectName("HomePage")
         self.setStyleSheet("""
             #HomePage {
-                background-color: #1A1C22;
+                background-color: #FAF9F6;
             }
         """)
-        self.pixmap = QPixmap("GUI/assets/page_home_bg.jpg")
+        self.pixmap = QPixmap("GUI/assets/page_home_bg.png")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 36, 40, 36)
         layout.setSpacing(18)
 
         self.panel_shadow = Shadow(
-            color=QColor(255, 255, 255, 18),
+            color=QColor(122, 90, 66, 40),
             blur_radius=24,
             x_offset=0,
             y_offset=0,
         ).effect
 
         self.screening_glow = Glow(
-            color=QColor(91, 110, 255, 90),
+            color=QColor(204, 85, 0, 120),
             blur_radius=20,
             x_offset=0,
             y_offset=0,
         ).glow
         
         self.similarity_glow = Glow(
-            color=QColor(91, 110, 255, 90),
+            color=QColor(204, 85, 0, 120),
             blur_radius=20,
             x_offset=0,
             y_offset=0,
         ).glow
 
-        title = QLabel("Molecular Property Prediction\nand Recommendation")
+        self.single_predict_glow = Glow(
+            color=QColor(204, 85, 0, 120),
+            blur_radius=20,
+            x_offset=0,
+            y_offset=0,
+        ).glow
+
+        title = QLabel("Multi-Modal Molecular Property Prediction \n and Recommendation System")
         title_font = QFont()
         title_font.setPointSize(60)
         title_font.setWeight(QFont.Weight.Bold)
         title.setFont(title_font)
-        title.setStyleSheet("color: #f2f4f8; font-size: 60px; font-weight: 800; letter-spacing: 0.5px;")
+        title.setStyleSheet("color: #6C3B1E; font-size: 60px; font-weight: 800; letter-spacing: 0.5px;")
         title.setAlignment(Qt.AlignCenter)
         title.setWordWrap(True)
 
@@ -61,8 +89,8 @@ class HomePage(QWidget):
         panel.setStyleSheet(
             """
             QFrame {
-                background-color: #252a32;
-                border: 2px solid #3A3F49;
+                background-color: #FFFDF8;
+                border: 2px solid #E0C7B1;
                 border-radius: 16px;
                 padding: 24px;
             }
@@ -72,29 +100,10 @@ class HomePage(QWidget):
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(14)
 
-        button_style = """
-            QPushButton {
-                background-color: #0d1661;
-                color: #ffffff;
-                border: none;
-                border-radius: 10px;
-                padding: 12px 22px;
-                font-weight: 700;
-                letter-spacing: 0.6px;
-                font-size: 22px;
-            }
-            QPushButton:hover {
-                background-color: #1521a0;
-            }
-            QPushButton:pressed {
-                background-color: #0f1970;
-            }
-        """
-
         self.btn_screening = QPushButton("Bulk Screening")
         self.btn_screening.setMinimumHeight(70)
         self.btn_screening.setMinimumWidth(360)
-        self.btn_screening.setStyleSheet(button_style)
+        self.btn_screening.setStyleSheet(HOME_BUTTON_STYLE)
         self.btn_screening.setGraphicsEffect(self.screening_glow)
         screening_font = QFont()
         screening_font.setPointSize(16)
@@ -108,12 +117,12 @@ class HomePage(QWidget):
         screening_desc.setAlignment(Qt.AlignCenter)
         screening_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         screening_desc.setMinimumHeight(36)
-        screening_desc.setStyleSheet("color: #c2c8d1; font-size: 18px;")
+        screening_desc.setStyleSheet("color: #7A6657; font-size: 18px;")
 
         self.btn_similarity = QPushButton("Similarity Search")
         self.btn_similarity.setMinimumHeight(70)
         self.btn_similarity.setMinimumWidth(360)
-        self.btn_similarity.setStyleSheet(button_style)
+        self.btn_similarity.setStyleSheet(HOME_BUTTON_STYLE)
         self.btn_similarity.setGraphicsEffect(self.similarity_glow)
         similarity_font = QFont()
         similarity_font.setPointSize(16)
@@ -127,13 +136,35 @@ class HomePage(QWidget):
         similarity_desc.setAlignment(Qt.AlignCenter)
         similarity_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         similarity_desc.setMinimumHeight(36)
-        similarity_desc.setStyleSheet("color: #c2c8d1; font-size: 18px;")
+        similarity_desc.setStyleSheet("color: #7A6657; font-size: 18px;")
+
+        self.btn_single_predict = QPushButton("Single Molecule Predict")
+        self.btn_single_predict.setMinimumHeight(70)
+        self.btn_single_predict.setMinimumWidth(360)
+        self.btn_single_predict.setStyleSheet(HOME_BUTTON_STYLE)
+        self.btn_single_predict.setGraphicsEffect(self.single_predict_glow)
+        single_predict_font = QFont()
+        single_predict_font.setPointSize(16)
+        single_predict_font.setWeight(QFont.Weight.Bold)
+        self.btn_single_predict.setFont(single_predict_font)
+
+        single_predict_desc = QLabel(
+            "Predict one SMILES and inspect the structure inline"
+        )
+        single_predict_desc.setWordWrap(True)
+        single_predict_desc.setAlignment(Qt.AlignCenter)
+        single_predict_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        single_predict_desc.setMinimumHeight(36)
+        single_predict_desc.setStyleSheet("color: #7A6657; font-size: 18px;")
 
         panel_layout.addWidget(self.btn_screening)
         panel_layout.addWidget(screening_desc)
         panel_layout.addSpacing(8)
         panel_layout.addWidget(self.btn_similarity)
         panel_layout.addWidget(similarity_desc)
+        panel_layout.addSpacing(8)
+        panel_layout.addWidget(self.btn_single_predict)
+        panel_layout.addWidget(single_predict_desc)
 
         layout.addStretch()
         layout.addWidget(title)
@@ -149,6 +180,7 @@ class HomePage(QWidget):
 
         self.btn_screening.clicked.connect(self.open_screening_signal.emit)
         self.btn_similarity.clicked.connect(self.open_similarity_signal.emit)
+        self.btn_single_predict.clicked.connect(self.open_single_predict_signal.emit)
 
     def paintEvent(self, event):
         """

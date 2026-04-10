@@ -11,13 +11,16 @@ class MoleculeInspectorDialog(QDialog):
         self.smiles = smiles
         self.explainability = explainability or {}
         
-        # Apply dark mode styling to the window
         self.setStyleSheet("""
             QDialog {
-                background-color: #1A1C22;
+                background-color: #FAF9F6;
             }
             QLabel {
-                color: #d1d1d1;
+                color: #4A3A2A;
+            }
+            QCheckBox {
+                color: #7A6657;
+                font-size: 11px;
             }
         """)
 
@@ -35,7 +38,6 @@ class MoleculeInspectorDialog(QDialog):
         layout.addWidget(title)
 
         self.attention_toggle = QCheckBox("Attention mode (highlight transformer-focused bonds)")
-        self.attention_toggle.setStyleSheet("color: #d1d1d1; font-size: 11px;")
         self.attention_toggle.toggled.connect(self._refresh_html)
         layout.addWidget(self.attention_toggle)
 

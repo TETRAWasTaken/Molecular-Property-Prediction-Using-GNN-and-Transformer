@@ -1,0 +1,19 @@
+name: hybrid-training
+channels:
+  - conda-forge
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - rdkit
+  - pandas
+  - numpy
+  - scipy
+  - scikit-learn
+  - dask
+  - pip:
+      - torch
+      - torch-geometric
+      - transformers
+      - art

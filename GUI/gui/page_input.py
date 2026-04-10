@@ -3,8 +3,27 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QScrollArea, QLabel, QTextEdit, QPushButton, QFileDialog
 )
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal
 from gui.effects import Shadow, Glow
+
+
+INPUT_BUTTON_STYLE = """
+    QPushButton {
+        background-color: #CC5500;
+        color: #FAF9F6;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 16px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+    }
+    QPushButton:hover {
+        background-color: #B34700;
+    }
+    QPushButton:pressed {
+        background-color: #8F3B00;
+    }
+"""
 
 class InputPage(QWidget):
     """
@@ -45,7 +64,7 @@ class InputPage(QWidget):
         title_font.setPointSize(40)
         title_font.setWeight(QFont.Weight.Bold)
         title.setFont(title_font)
-        title.setStyleSheet("color: #f2f4f8; font-size: 40px; font-weight: 800; letter-spacing: 0.4px;")
+        title.setStyleSheet("color: #6C3B1E; font-size: 40px; font-weight: 800; letter-spacing: 0.4px;")
         root_layout.addWidget(title)
 
         main_layout = QHBoxLayout()
@@ -61,11 +80,11 @@ class InputPage(QWidget):
                                    blur_radius=20,
                                    x_offset=0,
                                    y_offset=0).effect
-        self.upload_glow = Glow(color=QColor(91, 110, 255, 80),
+        self.upload_glow = Glow(color=QColor(204, 85, 0, 110),
                                 blur_radius=15,
                                 x_offset=0,
                                 y_offset=0).glow
-        self.run_glow = Glow(color=QColor(91, 110, 255, 120),
+        self.run_glow = Glow(color=QColor(204, 85, 0, 140),
                              blur_radius=20,
                              x_offset=0,
                              y_offset=0).glow
@@ -134,15 +153,29 @@ class InputPage(QWidget):
         input_label_font = QFont()
         input_label_font.setWeight(QFont.Weight.DemiBold)
         input_label.setFont(input_label_font)
+        input_label.setStyleSheet("color: #4A3A2A;")
         right_layout.addWidget(input_label)
         
         self.text_input = QTextEdit()
         self.text_input.setPlaceholderText("e.g. CCO, c1ccccc1, CC(=O)O")
         self.text_input.setMinimumHeight(100)
+        self.text_input.setStyleSheet("""
+            QTextEdit {
+                background-color: #FFF8F2;
+                border: 2px solid #E0C7B1;
+                border-radius: 8px;
+                color: #4A3A2A;
+                padding: 8px;
+            }
+            QTextEdit:focus {
+                border: 2px solid #CC5500;
+                background-color: #FFFDF8;
+            }
+        """)
         right_layout.addWidget(self.text_input)
 
         separator_label = QLabel("- OR -")
-        separator_label.setStyleSheet("color: #767676; text-align: center; margin: 8px 0px;")
+        separator_label.setStyleSheet("color: #7A6657; text-align: center; margin: 8px 0px;")
         separator_label_font = QFont()
         separator_label_font.setWeight(QFont.Weight.DemiBold)
         separator_label.setFont(separator_label_font)
@@ -150,11 +183,12 @@ class InputPage(QWidget):
 
         # File upload for SMILES strings
         self.btn_upload = QPushButton("📁 Upload CSV File")
+        self.btn_upload.setStyleSheet(INPUT_BUTTON_STYLE)
         self.btn_upload.setGraphicsEffect(self.upload_glow)
         self.btn_upload.setMinimumHeight(40)
 
         self.lbl_file = QLabel("No file uploaded")
-        self.lbl_file.setStyleSheet("color: #999999; font-style: italic; font-size: 12px; margin-top: 4px;")
+        self.lbl_file.setStyleSheet("color: #7A6657; font-style: italic; font-size: 12px; margin-top: 4px;")
         right_layout.addWidget(self.btn_upload)
         right_layout.addWidget(self.lbl_file)
 
@@ -162,6 +196,7 @@ class InputPage(QWidget):
 
         # Run button with enhanced styling
         self.btn_run = QPushButton("▶ Run Screening")
+        self.btn_run.setStyleSheet(INPUT_BUTTON_STYLE)
         self.btn_run.setGraphicsEffect(self.run_glow)
         self.btn_run.setMinimumHeight(50)
         self.btn_run.setMinimumWidth(180)
@@ -173,6 +208,7 @@ class InputPage(QWidget):
 
         self.btn_home = QPushButton("Home")
         self.btn_home.setMinimumHeight(40)
+        self.btn_home.setStyleSheet(INPUT_BUTTON_STYLE)
         right_layout.addWidget(self.btn_home)
 
         main_layout.addWidget(right_group, stretch=2)
@@ -187,7 +223,7 @@ class InputPage(QWidget):
             self.uploaded_csv_path = file_name
             short_name = file_name.split("/")[-1]
             self.lbl_file.setText(f"✓ Selected: {short_name}")
-            self.lbl_file.setStyleSheet("color: #10b981; font-style: normal; font-weight: 500; font-size: 12px; margin-top: 4px;")
+            self.lbl_file.setStyleSheet("color: #A94F0A; font-style: normal; font-weight: 500; font-size: 12px; margin-top: 4px;")
 
     def _emit_run(self, payload):
         self.run_screening_signal.emit(payload)

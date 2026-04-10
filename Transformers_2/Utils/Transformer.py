@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel
-from torch.optim import AdamW
-from typing import Dict, Any
 
 class AttentionPooling(nn.Module):
     """
