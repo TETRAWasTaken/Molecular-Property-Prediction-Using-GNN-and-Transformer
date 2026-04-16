@@ -11,7 +11,7 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from typing import List, Tuple
 
-from qm9_delta import apply_qm9_delta_learning
+from Scripts.qm9_delta import apply_qm9_delta_learning
 
 # ==========================================
 # 1. Feature Engineering Helpers

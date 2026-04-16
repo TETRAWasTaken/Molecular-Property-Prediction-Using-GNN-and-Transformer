@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qm9_delta import (
+from Scripts.qm9_delta import (
     QM9_TARGET_COLUMNS,
     apply_qm9_delta_learning,
     build_qm9_atom_reference_payload,

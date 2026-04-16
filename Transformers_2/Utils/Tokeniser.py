@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from .paths import Paths
 
-from qm9_delta import apply_qm9_delta_learning
+from Scripts.qm9_delta import apply_qm9_delta_learning
 
 
 class Tokeniser:

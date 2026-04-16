@@ -10,7 +10,7 @@ if __package__ in (None, ""):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-from qm9_delta import apply_qm9_delta_learning
+from Scripts.qm9_delta import apply_qm9_delta_learning
 
 from GIN_2.Utils.paths import Paths
 from GIN_2.Utils.preprocessing import RelationalGeometryPipeline

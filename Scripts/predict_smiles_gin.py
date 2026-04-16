@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from qm9_delta import add_qm9_atom_reference_correction
+from Scripts.qm9_delta import add_qm9_atom_reference_correction
 
 from GIN_2.Utils.GIN import GIN
 

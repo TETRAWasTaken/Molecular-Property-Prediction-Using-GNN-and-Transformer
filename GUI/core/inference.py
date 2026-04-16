@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
 	sys.path.insert(0, str(PROJECT_ROOT))
 
-from qm9_delta import add_qm9_atom_reference_correction
+from Scripts.qm9_delta import add_qm9_atom_reference_correction
 
 # Load platform-specific shared library produced by Makefile/Makefile.windows.
 _LIB_DIR = Path(__file__).resolve().parent
