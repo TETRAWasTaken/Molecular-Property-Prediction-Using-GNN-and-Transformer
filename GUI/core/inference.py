@@ -13,6 +13,12 @@ from rdkit.Chem import rdFingerprintGenerator
 from rdkit import DataStructs
 import torch
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+	sys.path.insert(0, str(PROJECT_ROOT))
+
+from qm9_delta import add_qm9_atom_reference_correction
+
 # Load platform-specific shared library produced by Makefile/Makefile.windows.
 _LIB_DIR = Path(__file__).resolve().parent
 if sys.platform.startswith('win'):
@@ -49,9 +55,24 @@ engine_lib.cleanup_engine.restype = None
 _TOKENIZER = None
 _MAX_SEQ_LEN = 64
 _DEFAULT_OUTPUT_DIM = 12
+_PROPERTY_NAMES = [
+	'mu',
+	'alpha',
+	'homo',
+	'lumo',
+	'gap',
+	'r2',
+	'zpve',
+	'u0',
+	'u298',
+	'h298',
+	'g298',
+	'cv',
+]
 _ENGINE_READY = False
 _ENGINE_MODEL_PATH = None
 _CONFIDENCE_CALIBRATION_CACHE = None
+_PROPERTY_STATS_CACHE = None
 _TRANSFORMER_MODEL = None
 _EXPLAINABILITY_MODEL_PATH = None
 _TOKENIZER_FALLBACK_WARNED = False
@@ -170,7 +191,7 @@ def build_graph_tensors_from_smiles(smiles, random_seed: Optional[int] = None):
 		params.randomSeed = int(random_seed)
 	has_3d = AllChem.EmbedMolecule(mol, params) == 0
 	if has_3d:
-		AllChem.MMFFOptimizeMolecule(mol)
+		AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
 		conf = mol.GetConformer()
 	else:
 		conf = None
@@ -289,6 +310,111 @@ def _resolve_confidence_calibration_path():
 	return None
 
 
+def _resolve_property_stats_path():
+	stats_env = os.environ.get('HYBRID_PROPERTY_STATS_PATH', '').strip()
+	if stats_env:
+		path = Path(stats_env).expanduser().resolve()
+		if path.exists():
+			return path
+
+	project_root = _LIB_DIR.parent.parent
+	candidates = [
+		project_root / 'models' / 'qm9_property_stats.json',
+		project_root / 'GUI' / 'assets' / 'qm9_property_stats.json',
+	]
+	for candidate in candidates:
+		if candidate.exists():
+			return candidate.resolve()
+
+	return None
+
+
+def _load_property_stats():
+	global _PROPERTY_STATS_CACHE
+	if _PROPERTY_STATS_CACHE is not None:
+		return _PROPERTY_STATS_CACHE
+
+	path = _resolve_property_stats_path()
+	if path is None:
+		_PROPERTY_STATS_CACHE = {}
+		return _PROPERTY_STATS_CACHE
+
+	try:
+		with path.open('r', encoding='utf-8') as f:
+			data = json.load(f)
+		properties = data.get('properties') if isinstance(data, dict) else None
+		if not isinstance(properties, dict):
+			_PROPERTY_STATS_CACHE = {}
+			return _PROPERTY_STATS_CACHE
+
+		stats = {}
+		for prop in _PROPERTY_NAMES:
+			entry = properties.get(prop)
+			if not isinstance(entry, dict):
+				continue
+			mean = entry.get('mean')
+			std = entry.get('std')
+			if mean is None or std is None:
+				continue
+			try:
+				stats[prop] = {
+					'mean': float(mean),
+					'std': float(std),
+				}
+			except (TypeError, ValueError):
+				continue
+
+		atom_reference_energies = data.get('atom_reference_energies') if isinstance(data, dict) else None
+		if isinstance(atom_reference_energies, dict):
+			stats['_atom_reference_energies'] = atom_reference_energies
+
+		stats['_path'] = str(path)
+		_PROPERTY_STATS_CACHE = stats
+		return _PROPERTY_STATS_CACHE
+	except Exception:
+		_PROPERTY_STATS_CACHE = {}
+		return _PROPERTY_STATS_CACHE
+
+
+def _descale_prediction_values(values, smiles: str | None = None):
+	arr = np.asarray(values, dtype=np.float32).copy()
+	stats = _load_property_stats()
+	if not isinstance(stats, dict) or not stats:
+		return arr
+
+	for idx, prop in enumerate(_PROPERTY_NAMES):
+		if idx >= arr.shape[0]:
+			break
+		entry = stats.get(prop)
+		if not isinstance(entry, dict):
+			continue
+		arr[idx] = (arr[idx] * float(entry['std'])) + float(entry['mean'])
+
+	if smiles:
+		atom_reference_payload = stats.get('_atom_reference_energies')
+		arr = np.asarray(
+			add_qm9_atom_reference_correction(arr.tolist(), smiles, _PROPERTY_NAMES, atom_reference_payload),
+			dtype=np.float32,
+		)
+	return arr
+
+
+def _descale_spread_values(values):
+	arr = np.asarray(values, dtype=np.float32).copy()
+	stats = _load_property_stats()
+	if not isinstance(stats, dict) or not stats:
+		return arr
+
+	for idx, prop in enumerate(_PROPERTY_NAMES):
+		if idx >= arr.shape[0]:
+			break
+		entry = stats.get(prop)
+		if not isinstance(entry, dict):
+			continue
+		arr[idx] = arr[idx] * float(entry['std'])
+	return arr
+
+
 def _load_confidence_calibration():
 	global _CONFIDENCE_CALIBRATION_CACHE
 	if _CONFIDENCE_CALIBRATION_CACHE is not None:
@@ -347,7 +473,7 @@ def _compute_prediction_intervals(mean_values, std_values):
 	}
 
 
-def run_hybrid_regression_with_confidence(smiles, model_path=None, n_conformers=3, base_seed=17):
+def run_hybrid_regression_with_confidence(smiles, model_path=None, n_conformers=3, base_seed=17, apply_descaling=True):
 	if n_conformers < 1:
 		raise ValueError('n_conformers must be >= 1')
 
@@ -368,17 +494,33 @@ def run_hybrid_regression_with_confidence(smiles, model_path=None, n_conformers=
 
 	stats = _compute_confidence_from_predictions(np.vstack(predictions))
 	intervals = _compute_prediction_intervals(stats['mean'], stats['std'])
+	prediction_values = np.asarray(stats['mean'], dtype=np.float32)
+	std_values = np.asarray(stats['std'], dtype=np.float32)
+	interval_lower = np.asarray(intervals['lower'], dtype=np.float32)
+	interval_upper = np.asarray(intervals['upper'], dtype=np.float32)
+	interval_radius = np.asarray(intervals['radius'], dtype=np.float32)
+
+	if apply_descaling:
+		prediction_values = _descale_prediction_values(prediction_values, smiles=smiles)
+		std_values = _descale_spread_values(std_values)
+		interval_lower = _descale_prediction_values(interval_lower, smiles=smiles)
+		interval_upper = _descale_prediction_values(interval_upper, smiles=smiles)
+		interval_radius = _descale_spread_values(interval_radius)
+
+	stats_source = _load_property_stats().get('_path') if apply_descaling else None
 	return {
-		'prediction': stats['mean'],
+		'prediction': prediction_values,
 		'confidence': {
-			'std': stats['std'].tolist(),
+			'std': std_values.tolist(),
 			'cv_percent': stats['cv_percent'].tolist(),
-			'interval_lower': intervals['lower'].tolist(),
-			'interval_upper': intervals['upper'].tolist(),
-			'interval_radius': intervals['radius'].tolist(),
+			'interval_lower': interval_lower.tolist(),
+			'interval_upper': interval_upper.tolist(),
+			'interval_radius': interval_radius.tolist(),
 			'interval_method': intervals['method'],
 			'interval_alpha': intervals['alpha'],
 			'interval_calibration_path': intervals['calibration_path'],
+			'descaled': bool(apply_descaling and stats_source),
+			'descaling_stats_path': stats_source,
 			'confidence_score': stats['confidence_score'],
 			'n_conformers_requested': int(n_conformers),
 			'n_conformers_used': int(len(predictions)),
@@ -419,11 +561,12 @@ class BatchInferenceThread(QThread):
 						smiles,
 						model_path=self.model_path,
 						n_conformers=self.n_conformers,
+						apply_descaling=True,
 					)
 					results.append((smiles, result['prediction'].tolist(), result['confidence']))
 				else:
 					pred = run_hybrid_regression(smiles, model_path=self.model_path)
-					results.append((smiles, pred.tolist(), None))
+					results.append((smiles, _descale_prediction_values(pred).tolist(), None))
 			except Exception as exc:
 				failures.append((smiles, str(exc)))
 
@@ -540,6 +683,7 @@ class SimilarityInferenceThread(QThread):
 				self.query_smiles,
 				model_path=self.model_path,
 				n_conformers=self.n_conformers,
+				apply_descaling=True,
 			)
 		except Exception as exc:
 			self.error.emit(f'Failed to predict query molecule: {exc}')
@@ -580,6 +724,7 @@ class SimilarityInferenceThread(QThread):
 					smiles,
 					model_path=self.model_path,
 					n_conformers=self.n_conformers,
+					apply_descaling=True,
 				)
 			except Exception as exc:
 				failures.append((smiles, str(exc)))
@@ -930,6 +1075,6 @@ class InferenceThread(QThread):
 				self.error.emit('SMILES input is required for hybrid inference')
 				return
 			prediction = run_hybrid_regression(self.smiles)
-			self.finished.emit(prediction)
+			self.finished.emit(_descale_prediction_values(prediction, smiles=self.smiles))
 		except Exception as exc:
 			self.error.emit(str(exc))

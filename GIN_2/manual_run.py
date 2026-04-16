@@ -10,6 +10,8 @@ if __package__ in (None, ""):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
+from qm9_delta import apply_qm9_delta_learning
+
 from GIN_2.Utils.paths import Paths
 from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
 from GIN_2.Utils.TrainingTesting import TrainingTesting
@@ -20,7 +22,9 @@ def get_dataset_stats(csv_path: str, target_cols: list) -> tuple:
     Calculates the global mean and standard deviation for dynamic normalization.
     """
     print(f"Calculating global statistics for {len(target_cols)} targets...")
-    df = pd.read_csv(csv_path, usecols=target_cols)
+    df = pd.read_csv(csv_path)
+    df = apply_qm9_delta_learning(df, smiles_col='smiles', target_cols=target_cols)
+    df = df[target_cols]
     mean_vals = df[target_cols].mean().values
     std_vals = df[target_cols].std().values
     
@@ -92,7 +96,7 @@ class main:
         self.target_mean, self.target_std = get_dataset_stats(self.mol_path, self.TARGET_COLS)
 
         # 2. Handle force rebuild (Manually delete the PyG cache file)
-        cache_file = './data/processed/qm_merged_3d_graphs.pt'
+        cache_file = './data/processed/qm_merged_3d_graphs_delta.pt'
         if self.force_rebuild and os.path.exists(cache_file):
             print("Force rebuild triggered. Deleting old cache...")
             os.remove(cache_file)

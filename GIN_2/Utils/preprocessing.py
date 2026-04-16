@@ -11,6 +11,8 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from typing import List, Tuple
 
+from qm9_delta import apply_qm9_delta_learning
+
 # ==========================================
 # 1. Feature Engineering Helpers
 # ==========================================
@@ -146,7 +148,7 @@ class RelationalGeometryPipeline(InMemoryDataset):
 
     @property
     def processed_file_names(self):
-        return ['qm_merged_3d_graphs.pt']
+        return ['qm_merged_3d_graphs_delta.pt']
 
     def download(self):
         pass 
@@ -169,6 +171,7 @@ class RelationalGeometryPipeline(InMemoryDataset):
 
         print("3. Merging molecule and atom data...")
         df_merged = df_mol.merge(df_coords, on='molecule_id', how='inner')
+        df_merged = apply_qm9_delta_learning(df_merged, smiles_col='smiles', target_cols=self.target_cols)
         
         # Free up RAM
         del df_mol

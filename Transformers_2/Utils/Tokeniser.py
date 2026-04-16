@@ -11,6 +11,8 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from .paths import Paths
 
+from qm9_delta import apply_qm9_delta_learning
+
 
 class Tokeniser:
     """
@@ -60,7 +62,7 @@ class Tokeniser:
         use_cache: bool = True,
         force_rebuild: bool = False,
         cache_path: Optional[str] = None,
-        cache_version: int = 1,
+        cache_version: int = 2,
         seed: int = 42,
         verbose: bool = True,
     ):
@@ -283,6 +285,7 @@ class Tokeniser:
 
         df_target = self.df
         self._validate_dataframe(df_target)
+        df_target = apply_qm9_delta_learning(df_target, smiles_col='smiles', target_cols=self.target_cols)
 
         if self.verbose:
             print("Scaling targets dynamically...")
