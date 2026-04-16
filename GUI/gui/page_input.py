@@ -59,7 +59,7 @@ class InputPage(QWidget):
         root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(16)
 
-        title = QLabel("Bulk Screening Input")
+        title = QLabel("Bounded Property Input")
         title_font = QFont()
         title_font.setPointSize(40)
         title_font.setWeight(QFont.Weight.Bold)

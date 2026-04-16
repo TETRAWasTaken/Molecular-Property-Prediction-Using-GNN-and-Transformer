@@ -1,7 +1,6 @@
 import argparse
 import os
 import sys
-import uuid
 import pandas as pd
 import torch
 from art import *
@@ -48,7 +47,8 @@ class main:
         self.mol_path = mol_path
         self.atom_path = atom_path
         self.force_rebuild = force_rebuild
-        self.save_path = save_path or Paths().get_model_path()
+        default_save_path = save_path or Paths().get_model_path()
+        self.save_path = os.path.abspath(os.path.expanduser(default_save_path))
         self.verbose = verbose
 
         # NEW: QM9 Target Columns
@@ -179,10 +179,25 @@ class main:
             print("No model to save.")
             return
 
-        target_path = save_path or self.save_path
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        torch.save(self.model.state_dict(), target_path)
-        print(f"Model saved to {target_path}")
+        target_path = os.path.abspath(os.path.expanduser(save_path or self.save_path))
+
+        # If a directory was passed, save with a default filename inside it.
+        if os.path.isdir(target_path):
+            target_path = os.path.join(target_path, "GIN_model.pth")
+
+        save_dir = os.path.dirname(target_path) or "."
+
+        try:
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save(self.model.state_dict(), target_path)
+            print(f"Model saved to {target_path}")
+        except (PermissionError, OSError) as exc:
+            fallback_path = os.path.abspath("GIN_2/outputs/GIN_model.pth")
+            fallback_dir = os.path.dirname(fallback_path)
+            os.makedirs(fallback_dir, exist_ok=True)
+            torch.save(self.model.state_dict(), fallback_path)
+            print(f"Warning: could not save to '{target_path}' ({exc}).")
+            print(f"Model saved to fallback path: {fallback_path}")
 
 
 if __name__ == "__main__":
@@ -199,19 +214,26 @@ if __name__ == "__main__":
     mol_path = args.mol_csv 
     atom_path = args.atom_csv 
 
-    output_dir = args.save_path
+    resolved_save_path = os.path.abspath(os.path.expanduser(args.save_path))
+    if os.path.isdir(resolved_save_path):
+        resolved_save_path = os.path.join(resolved_save_path, "GIN_model.pth")
+
+    output_dir = os.path.dirname(resolved_save_path) or "."
     if not os.path.exists(output_dir):
         print(f"Output directory not found at '{output_dir}'. Creating it now...")
         os.makedirs(output_dir, exist_ok=True)
-    probe_file = os.path.join(output_dir, f".dir_probe_{uuid.uuid4().hex}")
-    open(probe_file, "a").close()
-    print(f"Directory write probe created: {probe_file}")
+
+    probe_file = os.path.join(output_dir, ".dir_probe")
+    with open(probe_file, "a", encoding="utf-8"):
+        pass
+    os.remove(probe_file)
+    print(f"Output directory is writable: {output_dir}")
 
     runner = main(
         mol_path=mol_path,
         atom_path=atom_path,
         force_rebuild=args.force_rebuild,
-        save_path=args.save_path,
+        save_path=resolved_save_path,
         verbose=not args.quiet,
     )
     runner.run()

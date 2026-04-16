@@ -2,6 +2,8 @@ import plotly.graph_objects as go
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import numpy as np
+import tempfile
+from pathlib import Path
 
 
 CANVAS_READBACK_PATCH = """
@@ -156,7 +158,39 @@ def generate_3d_molecule_html(
         )
     )
 
-    html = fig.to_html(include_plotlyjs='cdn', full_html=True)
+    # Bundle Plotly JS into the HTML so Qt WebEngine can render offline reliably.
+    html = fig.to_html(include_plotlyjs=True, full_html=True)
     if "<head>" in html:
         html = html.replace("<head>", "<head>" + CANVAS_READBACK_PATCH, 1)
     return html
+
+
+def generate_3d_molecule_html_file(
+    smiles: str,
+    atom_contributions=None,
+    attention_bonds=None,
+    attention_mode: bool = False,
+) -> str:
+    """Generate molecule HTML and persist it to a temporary file.
+
+    Loading through a file URL avoids Qt WebEngine's setHtml data-size limits.
+    """
+
+    html = generate_3d_molecule_html(
+        smiles,
+        atom_contributions=atom_contributions,
+        attention_bonds=attention_bonds,
+        attention_mode=attention_mode,
+    )
+    out_dir = Path(tempfile.gettempdir()) / "molecular_3d_html"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".html",
+        prefix="mol_",
+        dir=out_dir,
+        encoding="utf-8",
+        delete=False,
+    ) as handle:
+        handle.write(html)
+        return handle.name

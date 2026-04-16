@@ -96,7 +96,7 @@ class SimilarityIndexPage(QWidget):
 		root_layout.setContentsMargins(16, 16, 16, 16)
 		root_layout.setSpacing(14)
 
-		title = QLabel("Similarity Search")
+		title = QLabel("Nearest Neighbour Search")
 		title_font = QFont()
 		title_font.setPointSize(40)
 		title_font.setWeight(QFont.Weight.Bold)

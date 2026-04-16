@@ -1,4 +1,6 @@
-from PySide6.QtCore import Qt, Signal, QThread
+from pathlib import Path
+
+from PySide6.QtCore import Qt, Signal, QThread, QUrl
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
 	QAbstractItemView,
@@ -20,7 +22,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from rdkit import Chem
 
 from core.inference import compute_transformer_explainability, run_hybrid_regression_with_confidence
-from core.visualisation import generate_3d_molecule_html
+from core.visualisation import generate_3d_molecule_html_file
 from gui.effects import Glow, Shadow
 
 
@@ -105,6 +107,7 @@ class SinglePredictPage(QWidget):
 		self.worker = None
 		self._current_smiles = ""
 		self._latest_explainability = {}
+		self._last_visualization_html_path = None
 
 		root_layout = QVBoxLayout(self)
 		root_layout.setContentsMargins(16, 16, 16, 16)
@@ -137,7 +140,7 @@ class SinglePredictPage(QWidget):
 		self.smiles_input.setPlaceholderText("Enter one SMILES string, e.g. CCO")
 		self.smiles_input.setMinimumHeight(38)
 
-		self.btn_predict = QPushButton("Predict Molecule")
+		self.btn_predict = QPushButton("Predict Properties")
 		self.btn_predict.setMinimumHeight(44)
 		self.btn_predict.setStyleSheet(SINGLE_BUTTON_STYLE)
 		self.btn_predict.setGraphicsEffect(
@@ -293,7 +296,7 @@ class SinglePredictPage(QWidget):
 		self._latest_explainability = {}
 		self.summary_label.setText("Prediction pending...")
 		self.visual_label.setText("Rendering molecular structure...")
-		self.browser.setHtml(generate_3d_molecule_html(smiles))
+		self._load_visualization_file(smiles)
 		self._set_running(True)
 
 		self.worker = SinglePredictThread(smiles=smiles, n_conformers=3)
@@ -363,11 +366,38 @@ class SinglePredictPage(QWidget):
 			return
 
 		explainability = self._latest_explainability if self.attention_toggle.isChecked() else {}
-		self.browser.setHtml(
-			generate_3d_molecule_html(
-				self._current_smiles,
-				atom_contributions=explainability.get("atom_scores"),
-				attention_bonds=explainability.get("bond_scores"),
-				attention_mode=bool(explainability) and self.attention_toggle.isChecked(),
-			)
+		self._load_visualization_file(
+			self._current_smiles,
+			atom_contributions=explainability.get("atom_scores"),
+			attention_bonds=explainability.get("bond_scores"),
+			attention_mode=bool(explainability) and self.attention_toggle.isChecked(),
 		)
+
+	def _load_visualization_file(
+		self,
+		smiles,
+		atom_contributions=None,
+		attention_bonds=None,
+		attention_mode=False,
+	):
+		html_path = generate_3d_molecule_html_file(
+			smiles,
+			atom_contributions=atom_contributions,
+			attention_bonds=attention_bonds,
+			attention_mode=attention_mode,
+		)
+		self._cleanup_visualization_html_file()
+		self._last_visualization_html_path = html_path
+		self.browser.load(QUrl.fromLocalFile(html_path))
+
+	def _cleanup_visualization_html_file(self):
+		if not self._last_visualization_html_path:
+			return
+		try:
+			Path(self._last_visualization_html_path).unlink(missing_ok=True)
+		except Exception:
+			pass
+
+	def closeEvent(self, event):
+		self._cleanup_visualization_html_file()
+		super().closeEvent(event)

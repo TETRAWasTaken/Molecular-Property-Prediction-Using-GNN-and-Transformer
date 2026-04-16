@@ -85,22 +85,22 @@ class HomePage(QWidget):
 
         panel = QFrame()
         panel.setGraphicsEffect(self.panel_shadow)
-        panel.setMaximumWidth(1000)
+        panel.setMaximumWidth(760)
         panel.setStyleSheet(
             """
             QFrame {
                 background-color: #FFFDF8;
                 border: 2px solid #E0C7B1;
                 border-radius: 16px;
-                padding: 24px;
+                padding: 16px;
             }
             """
         )
 
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setSpacing(14)
+        panel_layout.setSpacing(10)
 
-        self.btn_screening = QPushButton("Bulk Screening")
+        self.btn_screening = QPushButton("Screen By Property Range")
         self.btn_screening.setMinimumHeight(70)
         self.btn_screening.setMinimumWidth(360)
         self.btn_screening.setStyleSheet(HOME_BUTTON_STYLE)
@@ -110,16 +110,8 @@ class HomePage(QWidget):
         screening_font.setWeight(QFont.Weight.Bold)
         self.btn_screening.setFont(screening_font)
 
-        screening_desc = QLabel(
-            "Filter by target range"
-        )
-        screening_desc.setWordWrap(True)
-        screening_desc.setAlignment(Qt.AlignCenter)
-        screening_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        screening_desc.setMinimumHeight(36)
-        screening_desc.setStyleSheet("color: #7A6657; font-size: 18px;")
 
-        self.btn_similarity = QPushButton("Similarity Search")
+        self.btn_similarity = QPushButton("Search Similar Molecules")
         self.btn_similarity.setMinimumHeight(70)
         self.btn_similarity.setMinimumWidth(360)
         self.btn_similarity.setStyleSheet(HOME_BUTTON_STYLE)
@@ -129,16 +121,8 @@ class HomePage(QWidget):
         similarity_font.setWeight(QFont.Weight.Bold)
         self.btn_similarity.setFont(similarity_font)
 
-        similarity_desc = QLabel(
-            "Find Similar Molecules"
-        )
-        similarity_desc.setWordWrap(True)
-        similarity_desc.setAlignment(Qt.AlignCenter)
-        similarity_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        similarity_desc.setMinimumHeight(36)
-        similarity_desc.setStyleSheet("color: #7A6657; font-size: 18px;")
 
-        self.btn_single_predict = QPushButton("Single Molecule Predict")
+        self.btn_single_predict = QPushButton("Single Molecule Prediction")
         self.btn_single_predict.setMinimumHeight(70)
         self.btn_single_predict.setMinimumWidth(360)
         self.btn_single_predict.setStyleSheet(HOME_BUTTON_STYLE)
@@ -148,23 +132,12 @@ class HomePage(QWidget):
         single_predict_font.setWeight(QFont.Weight.Bold)
         self.btn_single_predict.setFont(single_predict_font)
 
-        single_predict_desc = QLabel(
-            "Predict one SMILES and inspect the structure inline"
-        )
-        single_predict_desc.setWordWrap(True)
-        single_predict_desc.setAlignment(Qt.AlignCenter)
-        single_predict_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        single_predict_desc.setMinimumHeight(36)
-        single_predict_desc.setStyleSheet("color: #7A6657; font-size: 18px;")
 
         panel_layout.addWidget(self.btn_screening)
-        panel_layout.addWidget(screening_desc)
         panel_layout.addSpacing(8)
         panel_layout.addWidget(self.btn_similarity)
-        panel_layout.addWidget(similarity_desc)
         panel_layout.addSpacing(8)
         panel_layout.addWidget(self.btn_single_predict)
-        panel_layout.addWidget(single_predict_desc)
 
         layout.addStretch()
         layout.addWidget(title)
