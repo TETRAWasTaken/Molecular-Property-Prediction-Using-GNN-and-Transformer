@@ -93,7 +93,7 @@ jobs:
             exit $LASTEXITCODE
           }
           
-          Write-Host "✓ Build successful: hybrid_engine.dll"
+          Write-Host "Build successful: hybrid_engine.dll"
           dir hybrid_engine.dll
 
       - name: Copy DLL to assets
@@ -105,7 +105,7 @@ jobs:
           if (Test-Path $src) {
             New-Item -ItemType Directory -Path "GUI\assets" -Force | Out-Null
             Copy-Item -Path $src -Destination $dst -Force
-            Write-Host "✓ DLL copied to assets"
+            Write-Host "DLL copied to assets"
           } else {
             Write-Error "DLL not found at $src"
             exit 1
@@ -117,7 +117,7 @@ jobs:
           $dll_path = "GUI\assets\hybrid_engine.dll"
           if (Test-Path $dll_path) {
             $size = (Get-Item $dll_path).Length
-            Write-Host "✓ DLL verified: $dll_path ($size bytes)"
+            Write-Host "DLL verified: $dll_path ($size bytes)"
           } else {
             Write-Error "DLL verification failed"
             exit 1
