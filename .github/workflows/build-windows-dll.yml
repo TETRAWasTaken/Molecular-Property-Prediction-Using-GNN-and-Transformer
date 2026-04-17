@@ -1,0 +1,131 @@
+name: Build Windows Inference DLL
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'GUI/core/inference.c'
+      - 'GUI/core/inference.h'
+      - 'GUI/core/Makefile.windows'
+      - '.github/workflows/build-windows-dll.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'GUI/core/inference.c'
+      - 'GUI/core/inference.h'
+  workflow_dispatch:
+
+jobs:
+  build-dll:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: ['x64']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Download ONNX Runtime SDK (Windows x64)
+        shell: powershell
+        run: |
+          $ort_version = "1.17.0"
+          $ort_url = "https://github.com/microsoft/onnxruntime/releases/download/v$ort_version/onnxruntime-win-x64.zip"
+          $ort_assets = "GUI\assets"
+          
+          Write-Host "Downloading ONNX Runtime $ort_version"
+          Invoke-WebRequest -Uri $ort_url -OutFile onnxruntime.zip
+          
+          # Extract to assets directory
+          New-Item -ItemType Directory -Path $ort_assets -Force | Out-Null
+          Expand-Archive -Path onnxruntime.zip -DestinationPath $ort_assets -Force
+          Write-Host "ONNX Runtime extracted to $ort_assets"
+          
+          # Rename extracted folder for consistency
+          $extracted = Get-ChildItem -Path $ort_assets -Type Directory -Filter "onnxruntime-*" | Select-Object -First 1
+          if ($extracted) {
+            Rename-Item -Path $extracted.FullName -NewName "onnxruntime-win-x64" -Force
+            Write-Host "Renamed to onnxruntime-win-x64"
+          }
+
+      - name: Build DLL with MSVC
+        shell: powershell
+        working-directory: GUI/core
+        run: |
+          $env:ORT_ROOT = "..\..\GUI\assets\onnxruntime-win-x64"
+          $env:ORT_INC = "$env:ORT_ROOT\include"
+          $env:ORT_LIB = "$env:ORT_ROOT\lib"
+          
+          Write-Host "ORT_ROOT: $env:ORT_ROOT"
+          Write-Host "ORT_INC: $env:ORT_INC"
+          Write-Host "ORT_LIB: $env:ORT_LIB"
+          
+          # Verify paths exist
+          if (-not (Test-Path $env:ORT_INC)) {
+            Write-Error "Include directory not found: $env:ORT_INC"
+            exit 1
+          }
+          if (-not (Test-Path $env:ORT_LIB)) {
+            Write-Error "Lib directory not found: $env:ORT_LIB"
+            exit 1
+          }
+          
+          # Compile with MSVC
+          cl.exe /I"$env:ORT_INC" /O2 /W4 /LD inference.c /link /LIBPATH:"$env:ORT_LIB" onnxruntime.lib /OUT:hybrid_engine.dll
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Compilation failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          
+          Write-Host "✓ Build successful: hybrid_engine.dll"
+          dir hybrid_engine.dll
+
+      - name: Copy DLL to assets
+        shell: powershell
+        run: |
+          $src = "GUI\core\hybrid_engine.dll"
+          $dst = "GUI\assets\hybrid_engine.dll"
+          
+          if (Test-Path $src) {
+            New-Item -ItemType Directory -Path "GUI\assets" -Force | Out-Null
+            Copy-Item -Path $src -Destination $dst -Force
+            Write-Host "✓ DLL copied to assets"
+          } else {
+            Write-Error "DLL not found at $src"
+            exit 1
+          }
+
+      - name: Verify DLL
+        shell: powershell
+        run: |
+          $dll_path = "GUI\assets\hybrid_engine.dll"
+          if (Test-Path $dll_path) {
+            $size = (Get-Item $dll_path).Length
+            Write-Host "✓ DLL verified: $dll_path ($size bytes)"
+          } else {
+            Write-Error "DLL verification failed"
+            exit 1
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hybrid_engine-x64
+          path: GUI/assets/hybrid_engine.dll
+          retention-days: 30
+
+      - name: Create Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: GUI/assets/hybrid_engine.dll
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
