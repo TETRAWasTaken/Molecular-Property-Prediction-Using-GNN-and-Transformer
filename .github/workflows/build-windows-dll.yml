@@ -34,23 +34,32 @@ jobs:
       - name: Download ONNX Runtime SDK (Windows x64)
         shell: powershell
         run: |
-          $ort_version = "1.17.0"
-          $ort_url = "https://github.com/microsoft/onnxruntime/releases/download/v$ort_version/onnxruntime-win-x64.zip"
+          $ort_url = "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip"
           $ort_assets = "GUI\assets"
           
-          Write-Host "Downloading ONNX Runtime $ort_version"
-          Invoke-WebRequest -Uri $ort_url -OutFile onnxruntime.zip
+          Write-Host "Downloading ONNX Runtime $ort_version from $ort_url"
+          
+          try {
+            Invoke-WebRequest -Uri $ort_url -OutFile onnxruntime.zip -ErrorAction Stop
+            Write-Host "✓ Download successful"
+          } catch {
+            Write-Error "Failed to download ONNX Runtime: $($_.Exception.Message)"
+            exit 1
+          }
           
           # Extract to assets directory
           New-Item -ItemType Directory -Path $ort_assets -Force | Out-Null
           Expand-Archive -Path onnxruntime.zip -DestinationPath $ort_assets -Force
-          Write-Host "ONNX Runtime extracted to $ort_assets"
+          Write-Host "✓ ONNX Runtime extracted to $ort_assets"
           
           # Rename extracted folder for consistency
           $extracted = Get-ChildItem -Path $ort_assets -Type Directory -Filter "onnxruntime-*" | Select-Object -First 1
           if ($extracted) {
             Rename-Item -Path $extracted.FullName -NewName "onnxruntime-win-x64" -Force
-            Write-Host "Renamed to onnxruntime-win-x64"
+            Write-Host "✓ Renamed to onnxruntime-win-x64"
+          } else {
+            Write-Error "No onnxruntime directory found after extraction"
+            exit 1
           }
 
       - name: Build DLL with MSVC
