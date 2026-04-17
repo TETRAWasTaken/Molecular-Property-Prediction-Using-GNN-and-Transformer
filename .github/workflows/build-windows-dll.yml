@@ -34,33 +34,34 @@ jobs:
       - name: Download ONNX Runtime SDK (Windows x64)
         shell: powershell
         run: |
-          $ort_url = "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip"
-          $ort_assets = "GUI\assets"
-          
-          Write-Host "Downloading ONNX Runtime $ort_version from $ort_url"
-          
-          try {
-            Invoke-WebRequest -Uri $ort_url -OutFile onnxruntime.zip -ErrorAction Stop
-            Write-Host "✓ Download successful"
-          } catch {
-            Write-Error "Failed to download ONNX Runtime: $($_.Exception.Message)"
+          $ErrorActionPreference = 'Stop'
+          $ortVersion = '1.24.4'
+          $zipName = "onnxruntime-win-x64-$ortVersion.zip"
+          $ortUrl = "https://github.com/microsoft/onnxruntime/releases/download/v$ortVersion/$zipName"
+          $ortAssets = 'GUI\assets'
+          $zipPath = 'onnxruntime.zip'
+          $extractedDir = Join-Path $ortAssets "onnxruntime-win-x64-$ortVersion"
+          $targetDir = Join-Path $ortAssets 'onnxruntime-win-x64'
+
+          Write-Host "Downloading ONNX Runtime from $ortUrl"
+          Invoke-WebRequest -Uri $ortUrl -OutFile $zipPath
+          Write-Host 'Download successful'
+
+          New-Item -ItemType Directory -Path $ortAssets -Force | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $ortAssets -Force
+          Write-Host "Extracted ONNX Runtime to $ortAssets"
+
+          if (-not (Test-Path $extractedDir)) {
+            Write-Error "Expected extracted directory not found: $extractedDir"
             exit 1
           }
-          
-          # Extract to assets directory
-          New-Item -ItemType Directory -Path $ort_assets -Force | Out-Null
-          Expand-Archive -Path onnxruntime.zip -DestinationPath $ort_assets -Force
-          Write-Host "✓ ONNX Runtime extracted to $ort_assets"
-          
-          # Rename extracted folder for consistency
-          $extracted = Get-ChildItem -Path $ort_assets -Type Directory -Filter "onnxruntime-*" | Select-Object -First 1
-          if ($extracted) {
-            Rename-Item -Path $extracted.FullName -NewName "onnxruntime-win-x64" -Force
-            Write-Host "✓ Renamed to onnxruntime-win-x64"
-          } else {
-            Write-Error "No onnxruntime directory found after extraction"
-            exit 1
+
+          if (Test-Path $targetDir) {
+            Remove-Item -Path $targetDir -Recurse -Force
           }
+
+          Rename-Item -Path $extractedDir -NewName 'onnxruntime-win-x64'
+          Write-Host 'Normalized directory name to onnxruntime-win-x64'
 
       - name: Build DLL with MSVC
         shell: powershell

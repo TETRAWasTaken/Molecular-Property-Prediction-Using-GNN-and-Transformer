@@ -18,6 +18,7 @@ __pycache__/
 *.spec
 *.xml
 *.json
+*.safetensors
 GUI/assets/onnxruntime-osx-arm64-1.24.4/GIT_COMMIT_ID
 GUI/assets/onnxruntime-osx-arm64-1.24.4/LICENSE
 GUI/assets/onnxruntime-osx-arm64-1.24.4/Privacy.md
@@ -72,3 +73,7 @@ GUI/assets/onnxruntime-win-x64-1.24.4/onnxruntime-win-x64-1.24.4/lib/onnxruntime
 GUI/assets/onnxruntime-win-x64-1.24.4/onnxruntime-win-x64-1.24.4/lib/onnxruntime_providers_shared.pdb
 GUI/assets/onnxruntime-win-x64-1.24.4/onnxruntime-win-x64-1.24.4/lib/onnxruntime.lib
 GUI/assets/onnxruntime-win-x64-1.24.4/onnxruntime-win-x64-1.24.4/lib/onnxruntime.pdb
+data/processed/Aspirin.png
+GUI/assets/inference_check_results.csv
+Transformers_2/outputs/evaluation_outputs.csv
+.amlignore
