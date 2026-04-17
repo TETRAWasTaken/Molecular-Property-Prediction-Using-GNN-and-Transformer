@@ -1,20 +1,6 @@
 name: Build Windows Inference DLL
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'GUI/core/inference.c'
-      - 'GUI/core/inference.h'
-      - 'GUI/core/Makefile.windows'
-      - '.github/workflows/build-windows-dll.yml'
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'GUI/core/inference.c'
-      - 'GUI/core/inference.h'
   workflow_dispatch:
 
 jobs:
