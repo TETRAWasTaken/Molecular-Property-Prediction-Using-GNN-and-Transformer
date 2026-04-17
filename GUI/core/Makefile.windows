@@ -1,0 +1,21 @@
+CC ?= clang
+SRC := inference.c
+OUT_DLL := hybrid_engine.dll
+
+# Set this to your Windows ONNX Runtime package root (contains include/ and lib/).
+ORT_ROOT ?= ../assets/onnxruntime-win-x64
+ORT_INC := $(ORT_ROOT)/include
+ORT_LIB := $(ORT_ROOT)/lib
+
+CFLAGS := -I$(ORT_INC) -O2
+LDFLAGS := -shared -L$(ORT_LIB) -lonnxruntime
+
+.PHONY: all clean
+
+all: $(OUT_DLL)
+
+$(OUT_DLL): $(SRC)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+clean:
+	rm -f $(OUT_DLL)

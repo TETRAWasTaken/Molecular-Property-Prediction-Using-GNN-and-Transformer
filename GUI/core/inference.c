@@ -1,5 +1,9 @@
 #include "inference.h"
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 // Global pointers for the ORT environment and session
 const OrtApi* g_ort = NULL;
 OrtEnv* env = NULL;
@@ -15,9 +19,40 @@ static int log_and_release_status(const char* context, OrtStatus* status) {
     return HYBRID_ERR_ORT_API;
 }
 
+#if defined(_WIN32)
+static wchar_t* utf8_to_wide(const char* utf8) {
+    int len_wide;
+    wchar_t* wide;
+
+    if (utf8 == NULL) {
+        return NULL;
+    }
+
+    len_wide = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    if (len_wide <= 0) {
+        return NULL;
+    }
+
+    wide = (wchar_t*)malloc((size_t)len_wide * sizeof(wchar_t));
+    if (wide == NULL) {
+        return NULL;
+    }
+
+    if (MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, len_wide) <= 0) {
+        free(wide);
+        return NULL;
+    }
+
+    return wide;
+}
+#endif
+
 HYBRID_API
 int init_engine(const char* model_path) {
     OrtStatus* status = NULL;
+#if defined(_WIN32)
+    wchar_t* model_path_wide = NULL;
+#endif
 
     if (model_path == NULL) {
         return HYBRID_ERR_INVALID_ARGUMENT;
@@ -58,9 +93,23 @@ int init_engine(const char* model_path) {
         return log_and_release_status("SetSessionGraphOptimizationLevel failed", status);
     }
 
-    // Load the model
+    // Load the model. ONNX Runtime expects a wide path on Windows.
+#if defined(_WIN32)
+    model_path_wide = utf8_to_wide(model_path);
+    if (model_path_wide == NULL) {
+        g_ort->ReleaseSessionOptions(session_options);
+        cleanup_engine();
+        return HYBRID_ERR_INVALID_ARGUMENT;
+    }
+
+    status = g_ort->CreateSession(env, model_path_wide, session_options, &session);
+#else
     status = g_ort->CreateSession(env, model_path, session_options, &session);
+#endif
     g_ort->ReleaseSessionOptions(session_options);
+#if defined(_WIN32)
+    free(model_path_wide);
+#endif
     
     if (status != NULL) {
         cleanup_engine();

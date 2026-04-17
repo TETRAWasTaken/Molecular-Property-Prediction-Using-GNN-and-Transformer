@@ -1,15 +1,78 @@
 # Hybrid Graph-Text Transformer for Molecular Property Prediction
 
-A high-throughput Multi-Task Deep Learning pipeline that predicts 25+ quantum chemical properties simultaneously by integrating QM7, QM8, and QM9 datasets.
+This repository contains a hybrid molecular property predictor that combines:
 
-This project implements a **Hybrid "Chimera" Architecture** that fuses a Graph Neural Network (GIN) with a Transformer Encoder (BERT-style) to capture both 3D topological structures and long-range chemical dependencies.
+- a GIN graph encoder (structure features)
+- a Transformer encoder (SMILES sequence features)
+- a fused inference engine used by the desktop GUI
 
----
+## GUI Setup (Quick)
 
-## Architecture
+Run all commands from the project root.
 
-The model uses a dual-stream encoder approach to maximize the information extracted from molecular representations:
+1. Create and activate a virtual environment:
 
-- **Stream A (Graph Expert):** A Graph Isomorphism Network (GIN) processes the molecular graph (Atoms & Bonds) to capture local connectivity and 3D geometry.
-- **Stream B (Sequence Expert):** A Transformer Encoder processes SMILES strings to capture global grammar, functional groups, and stereochemistry.
-- **Fusion Layer:** Concatenates embeddings from both streams ($V_{gnn} \oplus V_{text}$) and feeds them into task-specific heads.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+2. Install dependencies:
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install PySide6
+```
+
+3. Verify required GUI assets exist:
+
+- `GUI/assets/hybrid_model.onnx`
+- `GUI/core/libhybrid_engine.dylib` (macOS)
+
+4. Launch the GUI:
+
+```bash
+python GUI/guimain.py
+```
+
+## Optional: Rebuild the Native Inference Library (macOS)
+
+Only needed if `libhybrid_engine.dylib` is missing or outdated.
+
+```bash
+cd GUI/core
+make clean && make
+cd ../..
+```
+
+## Platform Notes (Linux / Windows)
+
+- Linux shared library: `GUI/core/libhybrid_engine.so`
+- Windows shared library: `GUI/core/hybrid_engine.dll`
+
+Linux rebuild:
+
+```bash
+cd GUI/core
+make so
+cd ../..
+```
+
+Windows rebuild:
+
+Use your Windows ONNX Runtime C SDK/include+lib paths and compile `GUI/core/inference.c` to `hybrid_engine.dll`.
+This repo currently bundles ONNX Runtime binaries for macOS under `GUI/assets/onnxruntime-osx-arm64-1.24.4`.
+
+Windows launch:
+
+```powershell
+python GUI/guimain.py
+```
+
+## Troubleshooting
+
+- `ONNX model file was not found`:
+	Place the model at `GUI/assets/hybrid_model.onnx` or set `HYBRID_ONNX_MODEL_PATH`.
+- Qt WebEngine rendering issues on macOS:
+	`GUI_FORCE_SOFTWARE_WEBENGINE=1 python GUI/guimain.py`
