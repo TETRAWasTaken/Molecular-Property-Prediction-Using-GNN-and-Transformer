@@ -2,7 +2,7 @@ from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import QStyle, QStyleOption, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy
 
-from gui.effects import Shadow, Glow
+from GUI.gui.effects import Shadow, Glow
 
 
 HOME_BUTTON_STYLE = """

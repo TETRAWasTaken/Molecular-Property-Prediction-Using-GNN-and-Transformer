@@ -7,8 +7,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QColor, QFont
-from gui.page_visualisation import MoleculeInspectorDialog
-from core.inference import compute_transformer_explainability
+from GUI.gui.page_visualisation import MoleculeInspectorDialog
+from GUI.core.inference import compute_transformer_explainability
 
 
 RESULTS_BUTTON_STYLE = """

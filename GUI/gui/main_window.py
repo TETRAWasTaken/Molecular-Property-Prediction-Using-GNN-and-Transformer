@@ -5,13 +5,13 @@ from PySide6.QtWidgets import QMainWindow, QStackedWidget, QGraphicsOpacityEffec
 from PySide6.QtCore import QEasingCurve, QPoint, QParallelAnimationGroup, QPropertyAnimation
 from PySide6.QtWidgets import QMessageBox
 
-from gui.page_home import HomePage
-from gui.page_input import InputPage
-from gui.page_result import ResultsPage
-from gui.page_similarityindex import SimilarityIndexPage
-from gui.page_singlepredict import SinglePredictPage
-from gui.effects import Animation
-from core.inference import BatchInferenceThread, SimilarityInferenceThread
+from GUI.gui.page_home import HomePage
+from GUI.gui.page_input import InputPage
+from GUI.gui.page_result import ResultsPage
+from GUI.gui.page_similarityindex import SimilarityIndexPage
+from GUI.gui.page_singlepredict import SinglePredictPage
+from GUI.gui.effects import Animation
+from GUI.core.inference import BatchInferenceThread, SimilarityInferenceThread
 
 class MainWindow(QMainWindow):
     def __init__(self):

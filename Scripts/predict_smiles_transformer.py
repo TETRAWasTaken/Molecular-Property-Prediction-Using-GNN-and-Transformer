@@ -140,7 +140,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Predict molecular properties from a SMILES string using a standalone Transformer checkpoint."
     )
-    parser.add_argument("smiles", help="Input SMILES string, e.g. CCO")
+    parser.add_argument("smiles", help="Input SMILES string, e.g. CCO", default="CCO")
     parser.add_argument(
         "--model",
         default="/Users/anshumaansoni/PycharmProjects/Molecular-Property-Prediction-Using-GNN-and-Transformer/models/transformer_molecular_model.pth",

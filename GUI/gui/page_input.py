@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtCore import Signal
-from gui.effects import Shadow, Glow
+from GUI.gui.effects import Shadow, Glow
 
 
 INPUT_BUTTON_STYLE = """
@@ -40,18 +40,21 @@ class InputPage(QWidget):
         self.properties = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2',
                            'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
         self.default_property_ranges = {
-            'mu': (-1.686439, 3.281758),
-            'alpha': (-2.641577, 2.431582),
-            'homo': (-2.951540, 5.050764),
-            'lumo': (-2.430256, 3.764272),
-            'gap': (-1.959863, 2.107400),
-            'r2': (-1.829311, 3.721191),
-            'zpve': (-2.553265, 2.277082),
-            'u0': (-3.888944, 2.122974),
-            'u298': (-3.884573, 2.118524),
-            'h298': (-3.886974, 2.121083),
-            'g298': (-3.888423, 2.122296),
-            'cv': (-2.001001, 2.176433),
+            # Defaults are in descaled (physical) units because screening
+            # filters against descaled inference outputs.
+            # Defaults use exact descaled min/max bounds from inference data.
+            'mu': (0.440250, 6.017321),
+            'alpha': (51.679333, 89.751731),
+            'homo': (-0.294213, -0.120517),
+            'lumo': (-0.065847, 0.185014),
+            'gap': (0.176984, 0.350006),
+            'r2': (666.504590, 1706.659376),
+            'zpve': (0.061911, 0.212734),
+            'u0': (6555.741952, 12692.085130),
+            'u298': (6558.644614, 12688.391376),
+            'h298': (6556.339980, 12689.868002),
+            'g298': (6563.046069, 12697.606898),
+            'cv': (22.884100, 43.072885),
         }
         self.uploaded_csv_path = None
 
@@ -116,8 +119,12 @@ class InputPage(QWidget):
         for prop in self.properties:
             min_box = QDoubleSpinBox()
             max_box = QDoubleSpinBox()
-            min_box.setRange(-1000, 1000)
-            max_box.setRange(-1000, 1000)
+            # Screening uses descaled physical units; energy properties can be
+            # far above 1000, so keep spinbox limits broad to avoid clamping.
+            min_box.setRange(-50000, 50000)
+            max_box.setRange(-50000, 50000)
+            min_box.setDecimals(6)
+            max_box.setDecimals(6)
             default_min, default_max = self.default_property_ranges.get(prop, (100, 100))
             min_box.setValue(default_min)
             max_box.setValue(default_max)

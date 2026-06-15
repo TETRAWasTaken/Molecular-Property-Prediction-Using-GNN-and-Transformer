@@ -19,9 +19,9 @@ from PySide6.QtWidgets import (
 	QWidget,
 )
 
-from gui.effects import Glow, Shadow
-from gui.page_visualisation import MoleculeInspectorDialog
-from core.inference import compute_transformer_explainability
+from GUI.gui.effects import Glow, Shadow
+from GUI.gui.page_visualisation import MoleculeInspectorDialog
+from GUI.core.inference import compute_transformer_explainability
 
 
 SIMILARITY_BUTTON_STYLE = """

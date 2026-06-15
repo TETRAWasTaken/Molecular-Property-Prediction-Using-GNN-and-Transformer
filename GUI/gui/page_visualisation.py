@@ -4,7 +4,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtGui import QFont
-from core.visualisation import generate_3d_molecule_html_file
+from GUI.core.visualisation import generate_3d_molecule_html_file
 
 class MoleculeInspectorDialog(QDialog):
     def __init__(self, smiles: str, explainability=None, parent=None):

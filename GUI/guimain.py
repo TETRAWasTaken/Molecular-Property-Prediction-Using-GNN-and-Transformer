@@ -5,9 +5,13 @@ warms up the inference engine in the background, and opens the main GUI window
 after startup.
 """
 
-import sys
 import os
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 existing_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
 # Mitigate QtWebEngine Chromium Skia mailbox errors on macOS while keeping WebGL on.
@@ -26,10 +30,11 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = updated_flags
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from gui.main_window import MainWindow
 from PySide6.QtGui import QFontDatabase, Qt
 from PySide6.QtCore import QTimer, QUrl
-from core.inference import EngineWarmupThread
+
+from GUI.core.inference import EngineWarmupThread
+from GUI.gui.main_window import MainWindow
 
 stylesheet = """
 QMainWindow {

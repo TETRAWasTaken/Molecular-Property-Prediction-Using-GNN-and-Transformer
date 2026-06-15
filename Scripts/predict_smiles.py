@@ -15,11 +15,12 @@ from pathlib import Path
 import numpy as np
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from GUI.core.inference import cleanup_hybrid_engine, init_hybrid_engine, run_hybrid_regression
+from Scripts.qm9_delta import convert_delta_ev_to_kjmol, QM9_DELTA_TARGET_COLUMNS
 
 
 PROPERTY_NAMES = [
@@ -76,11 +77,48 @@ def _inverse_scale_predictions(values: list[float], property_stats: dict[str, di
     return de_scaled
 
 
+def _convert_energies_to_delta_kjmol(
+    values: list[float],
+    smiles: str,
+) -> list[float]:
+    """Convert energy properties from eV (delta) to kJ/mol.
+    
+    Since the model uses delta learning, predictions are already delta energies in eV.
+    We only need to convert the unit from eV to kJ/mol.
+    
+    For H298, G298, U298, U0: converts from eV (delta) to kJ/mol (delta)
+    Other properties remain unchanged.
+    
+    Args:
+        values: Array of property values (energy properties in eV after inverse scaling)
+        smiles: Molecule SMILES string (not needed for delta-trained model)
+        
+    Returns:
+        Updated array with energy properties in delta kJ/mol
+    """
+    converted = list(values)
+    
+    for idx, prop in enumerate(PROPERTY_NAMES):
+        if idx >= len(converted):
+            break
+        if prop in QM9_DELTA_TARGET_COLUMNS:
+            try:
+                # values[idx] should be in eV (delta energy) at this point
+                converted[idx] = convert_delta_ev_to_kjmol(float(converted[idx]))
+            except Exception as e:
+                print(f"[Warning] Failed to convert {prop} to delta kJ/mol: {e}")
+                # Keep the original value if conversion fails
+    
+    return converted
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Predict molecular properties from a single SMILES string."
     )
-    parser.add_argument("smiles", help="Input SMILES string, e.g. CCO")
+    parser.add_argument("smiles", 
+                        help="Input SMILES string, e.g. CCO",
+                        default="CCO")
     parser.add_argument(
         "--model",
         default=None,
@@ -121,7 +159,9 @@ def main() -> int:
             property_stats = _load_property_stats(stats_path)
             if property_stats:
                 values = _inverse_scale_predictions(values_raw, property_stats)
-                scaling_mode = f"inverse_scaled_from:{stats_path}"
+                # Convert energy properties from absolute Hartree to delta kJ/mol
+                values = _convert_energies_to_delta_kjmol(values, smiles)
+                scaling_mode = f"inverse_scaled_from:{stats_path} (energies in delta kJ/mol)"
             else:
                 scaling_mode = "raw_scaled (property stats unavailable)"
 
@@ -131,7 +171,23 @@ def main() -> int:
         print("Predicted properties:")
         for index, value in enumerate(values):
             name = PROPERTY_NAMES[index] if index < len(PROPERTY_NAMES) else f"property_{index}"
-            print(f"  {name:>6}: {float(value): .6f}")
+            if name in QM9_DELTA_TARGET_COLUMNS:
+                unit = "kJ/mol (delta)"
+            elif name in ["mu"]:
+                unit = "Debye"
+            elif name in ["alpha"]:
+                unit = "Ų"
+            elif name in ["homo", "lumo", "gap"]:
+                unit = "eV"
+            elif name in ["r2"]:
+                unit = "Ų"
+            elif name in ["zpve"]:
+                unit = "eV"
+            elif name in ["cv"]:
+                unit = "cal/(mol·K)"
+            else:
+                unit = "???"
+            print(f"  {name:>6}: {float(value):>12.6f}  [{unit}]")
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"[ERROR] Prediction failed: {exc}")

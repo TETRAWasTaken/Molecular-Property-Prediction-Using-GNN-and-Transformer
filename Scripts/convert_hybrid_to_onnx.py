@@ -1,11 +1,66 @@
 import argparse
 from pathlib import Path
+import sys
+from collections.abc import Mapping
 
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from main import HybridFusionModel
+
+
+def _extract_state_dict(payload):
+    if isinstance(payload, Mapping):
+        if isinstance(payload.get("state_dict"), Mapping):
+            return payload["state_dict"]
+        if isinstance(payload.get("model_state_dict"), Mapping):
+            return payload["model_state_dict"]
+        if any(str(key).startswith("graph_encoder.") or str(key).startswith("fusion_mlp.") for key in payload.keys()):
+            return payload
+
+    raise ValueError("Could not find a valid HybridFusionModel state_dict in the checkpoint")
+
+
+def _infer_model_dimensions(state_dict):
+    required_keys = [
+        "graph_encoder.node_encoder.weight",
+        "fusion_mlp.0.weight",
+        "fusion_mlp.8.weight",
+    ]
+    missing = [key for key in required_keys if key not in state_dict]
+    if missing:
+        raise ValueError(f"Checkpoint is missing required keys: {missing}")
+
+    gin_hidden_dim = int(state_dict["graph_encoder.node_encoder.weight"].shape[0])
+    mlp_hidden_dim = int(state_dict["fusion_mlp.0.weight"].shape[0])
+    output_dim = int(state_dict["fusion_mlp.8.weight"].shape[0])
+
+    return {
+        "gin_hidden_dim": gin_hidden_dim,
+        "mlp_hidden_dim": mlp_hidden_dim,
+        "output_dim": output_dim,
+    }
+
+
+class ExportFriendlyBilinear(nn.Module):
+    def __init__(self, in_features: int, out_features: int, bias: bool = True):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(out_features, in_features, in_features))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features))
+        else:
+            self.register_parameter("bias", None)
+
+    def forward(self, input1, input2):
+        output = (input1.unsqueeze(1).unsqueeze(-1) * self.weight.unsqueeze(0) * input2.unsqueeze(1).unsqueeze(1)).sum(dim=(2, 3))
+        if self.bias is not None:
+            output = output + self.bias
+        return output
 
 
 class HybridOnnxWrapper(nn.Module):
@@ -39,19 +94,24 @@ def export_onnx(args):
 
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
 
+    state = torch.load(pth_path, map_location="cpu")
+    state = _extract_state_dict(state)
+    inferred = _infer_model_dimensions(state)
+
+    gin_hidden_dim = args.gin_hidden_dim if args.gin_hidden_dim is not None else inferred["gin_hidden_dim"]
+    mlp_hidden_dim = args.mlp_hidden_dim if args.mlp_hidden_dim is not None else inferred["mlp_hidden_dim"]
+    output_dim = args.output_dim if args.output_dim is not None else inferred["output_dim"]
+
     model = HybridFusionModel(
-        gin_hidden_dim=args.gin_hidden_dim,
+        gin_hidden_dim=gin_hidden_dim,
         transformer_model=args.transformer_model,
-        mlp_hidden_dim=args.mlp_hidden_dim,
-        output_dim=args.output_dim,
+        mlp_hidden_dim=mlp_hidden_dim,
+        output_dim=output_dim,
         dropout=args.dropout,
     )
 
-    state = torch.load(pth_path, map_location="cpu")
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
-    elif isinstance(state, dict) and "model_state_dict" in state:
-        state = state["model_state_dict"]
+    model.bilinear = ExportFriendlyBilinear(gin_hidden_dim, gin_hidden_dim, bias=True)
+
     model.load_state_dict(state, strict=True)
     model.eval()
 
@@ -95,12 +155,12 @@ def export_onnx(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Export HybridFusionModel .pth to ONNX")
-    parser.add_argument("--pth_path", type=str, default="best_hybrid_model.pth")
-    parser.add_argument("--onnx_path", type=str, default="GUI/assets/hybrid_model.onnx")
+    parser.add_argument("--pth_path", type=str, default=str(PROJECT_ROOT / "models" / "best_hybrid_model.pth"))
+    parser.add_argument("--onnx_path", type=str, default=str(PROJECT_ROOT / "GUI" / "assets" / "hybrid_model.onnx"))
     parser.add_argument("--transformer_model", type=str, default="seyonec/ChemBERTa-zinc-base-v1")
-    parser.add_argument("--gin_hidden_dim", type=int, default=256)
-    parser.add_argument("--mlp_hidden_dim", type=int, default=512)
-    parser.add_argument("--output_dim", type=int, default=12)
+    parser.add_argument("--gin_hidden_dim", type=int, default=None)
+    parser.add_argument("--mlp_hidden_dim", type=int, default=None)
+    parser.add_argument("--output_dim", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--seq_len", type=int, default=64)
     parser.add_argument("--num_nodes", type=int, default=24)

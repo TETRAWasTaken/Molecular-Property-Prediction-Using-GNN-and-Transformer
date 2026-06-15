@@ -21,9 +21,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from rdkit import Chem
 
-from core.inference import compute_transformer_explainability, run_hybrid_regression_with_confidence
-from core.visualisation import generate_3d_molecule_html_file
-from gui.effects import Glow, Shadow
+from GUI.core.inference import compute_transformer_explainability, run_hybrid_regression_with_confidence
+from GUI.core.visualisation import generate_3d_molecule_html_file
+from GUI.gui.effects import Glow, Shadow
 
 
 SINGLE_BUTTON_STYLE = """

@@ -6,6 +6,11 @@ import pandas as pd
 from rdkit import Chem
 
 
+# Unit conversion constants
+HARTREE_TO_EV = 27.2113863  # 1 Hartree = 27.2113863 eV
+EV_TO_KJMOL = 96.485333  # 1 eV = 96.485333 kJ/mol
+HARTREE_TO_KJMOL = HARTREE_TO_EV * EV_TO_KJMOL  # 1 Hartree = 2625.5 kJ/mol
+
 QM9_TARGET_COLUMNS = [
     "mu",
     "alpha",
@@ -61,6 +66,49 @@ _QM9_ATOMIC_SYMBOLS = {
     8: "O",
     9: "F",
 }
+
+
+def convert_hartree_to_kjmol(value_hartree: float) -> float:
+    """Convert energy from Hartree to kJ/mol.
+    
+    Args:
+        value_hartree: Energy value in Hartree atomic units
+        
+    Returns:
+        Energy value in kJ/mol
+    """
+    return float(value_hartree) * HARTREE_TO_KJMOL
+
+
+def convert_ev_to_kjmol(value_ev: float) -> float:
+    """Convert energy from eV to kJ/mol.
+    
+    Args:
+        value_ev: Energy value in electron volts
+        
+    Returns:
+        Energy value in kJ/mol
+    """
+    return float(value_ev) * EV_TO_KJMOL
+
+
+def convert_delta_ev_to_kjmol(
+    delta_energy_ev: float,
+) -> float:
+    """Convert delta energy in eV to delta energy in kJ/mol.
+    
+    This is used when the model has already been trained with delta learning,
+    so the predictions are already DELTA energies (relative to atomic references).
+    We only need to convert the unit from eV to kJ/mol.
+    
+    Args:
+        delta_energy_ev: Delta energy in eV (already adjusted for atomic references)
+        
+    Returns:
+        Delta energy in kJ/mol
+    """
+    return float(delta_energy_ev) * EV_TO_KJMOL
+
 
 
 def _parse_smiles(smiles: str):

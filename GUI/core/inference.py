@@ -17,7 +17,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
 	sys.path.insert(0, str(PROJECT_ROOT))
 
-from Scripts.qm9_delta import add_qm9_atom_reference_correction
+from Scripts.qm9_delta import (
+	add_qm9_atom_reference_correction,
+	QM9_DELTA_TARGET_COLUMNS,
+)
 
 # Load platform-specific shared library produced by Makefile/Makefile.windows.
 _LIB_DIR = Path(__file__).resolve().parent
@@ -377,11 +380,28 @@ def _load_property_stats():
 
 
 def _descale_prediction_values(values, smiles: str | None = None):
+	"""Descale model predictions from normalized space to physical units.
+	
+	Since the model is trained with standardized targets, this function only
+	applies inverse standardization (mean/std) for every property.
+	
+	Energy targets (u0, u298, h298, g298) are already represented in the same
+	units as the stats file used during training/inference, so no additional
+	unit conversion is applied here.
+	
+	Args:
+		values: Scaled predictions array
+		smiles: Optional SMILES string (not used for delta-trained model)
+		
+	Returns:
+		Descaled predictions in physical units
+	"""
 	arr = np.asarray(values, dtype=np.float32).copy()
 	stats = _load_property_stats()
 	if not isinstance(stats, dict) or not stats:
 		return arr
 
+	# Inverse scale all values using standardization stats
 	for idx, prop in enumerate(_PROPERTY_NAMES):
 		if idx >= arr.shape[0]:
 			break
@@ -389,21 +409,27 @@ def _descale_prediction_values(values, smiles: str | None = None):
 		if not isinstance(entry, dict):
 			continue
 		arr[idx] = (arr[idx] * float(entry['std'])) + float(entry['mean'])
-
-	if smiles:
-		atom_reference_payload = stats.get('_atom_reference_energies')
-		arr = np.asarray(
-			add_qm9_atom_reference_correction(arr.tolist(), smiles, _PROPERTY_NAMES, atom_reference_payload),
-			dtype=np.float32,
-		)
+	
 	return arr
 
 
 def _descale_spread_values(values):
+	"""Descale spread (uncertainty) values to physical units.
+	
+	For energy properties (u0, u298, h298, g298):
+	- Scales from normalized to eV (multiply by std)
+	- Converts from eV uncertainty to kJ/mol uncertainty (multiply by 96.485333)
+	
+	For other properties:
+	- Scales from normalized to physical units (multiply by std)
+	"""
 	arr = np.asarray(values, dtype=np.float32).copy()
 	stats = _load_property_stats()
 	if not isinstance(stats, dict) or not stats:
 		return arr
+
+	# Import conversion constant
+	from Scripts.qm9_delta import EV_TO_KJMOL
 
 	for idx, prop in enumerate(_PROPERTY_NAMES):
 		if idx >= arr.shape[0]:
@@ -411,7 +437,14 @@ def _descale_spread_values(values):
 		entry = stats.get(prop)
 		if not isinstance(entry, dict):
 			continue
+		
+		# Step 1: Scale spread by std (now in eV for energy properties)
 		arr[idx] = arr[idx] * float(entry['std'])
+		
+		# Step 2: For energy properties, convert units from eV to kJ/mol
+		if prop in QM9_DELTA_TARGET_COLUMNS:
+			arr[idx] = arr[idx] * EV_TO_KJMOL
+	
 	return arr
 
 
