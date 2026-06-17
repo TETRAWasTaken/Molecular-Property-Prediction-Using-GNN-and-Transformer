@@ -71,7 +71,10 @@ class Tokeniser:
 
         self.verbose = verbose
         self.model_name = model_name
-        self.tokeniser = AutoTokenizer.from_pretrained(model_name)
+        try:
+            self.tokeniser = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+        except OSError:
+            self.tokeniser = AutoTokenizer.from_pretrained(model_name, local_files_only=False)
         self.max_length = max_length
         self.batch_size = batch_size
         self.mol_path = mol_path

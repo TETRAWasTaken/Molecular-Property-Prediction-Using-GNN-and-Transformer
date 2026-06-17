@@ -34,7 +34,10 @@ class StandaloneChemBERTa(nn.Module):
         super().__init__()
         
         # 1. THE BODY
-        self.transformer = AutoModel.from_pretrained(model_name)
+        try:
+            self.transformer = AutoModel.from_pretrained(model_name, local_files_only=True)
+        except OSError:
+            self.transformer = AutoModel.from_pretrained(model_name, local_files_only=False)
         self.hidden_size = self.transformer.config.hidden_size # Typically 768
         
         # 2. THE NECK (NEW: Attention Pooling)
