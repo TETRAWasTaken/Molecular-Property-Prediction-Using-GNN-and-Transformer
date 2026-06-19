@@ -29,6 +29,7 @@ class main:
         learning_rate: float = 5e-5,
         max_length: int = 64,
         seed: int = 42,
+        preprocess_only: bool = False,
     ):
         self.mol_path = mol_path
         self.use_cache = use_cache
@@ -39,6 +40,7 @@ class main:
         self.artifacts_dir = self.paths.get_artifacts_dir()
         self.save_path = save_path or self.paths.get_model_path()
         self.verbose = verbose
+        self.preprocess_only = preprocess_only
 
         self.BATCH_SIZE = batch_size
         self.EPOCHS = epochs
@@ -291,6 +293,12 @@ class main:
         print(f"Training device: {self.DEVICE}")
 
         self.preprocess()
+
+        if self.preprocess_only:
+            print("\nPreprocessing complete. Tokenized dataset cache has been generated.")
+            print("Skipping training and evaluation as requested.")
+            return
+
         self.build_model()
         self.train()
         self.evaluate()
@@ -301,6 +309,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Manual Transformer fine-tuning runner")
     parser.add_argument("--mol_csv", type=str, default="Dataset/New_QM9/molecule_properties.csv", help="Path to molecules CSV")
     parser.add_argument("--force_rebuild", action="store_true", help="Ignore cache and rebuild preprocessing")
+    parser.add_argument("--preprocess_only", action="store_true", help="Only run the preprocessing step and create the cache")
     parser.add_argument("--save_path", type=str, default=None, help="Path to save the best model checkpoint")
     parser.add_argument("--cache_path", type=str, default=None, help="Path to save/load preprocessing cache")
     parser.add_argument("--batch_size", type=int, default=32, help="Training batch size")
@@ -320,8 +329,6 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         max_length=args.max_length,
         seed=args.seed,
+        preprocess_only=args.preprocess_only,
     )
     runner.run()
-
-
-

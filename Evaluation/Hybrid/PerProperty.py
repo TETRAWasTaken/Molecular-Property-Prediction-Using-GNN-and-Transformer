@@ -20,121 +20,91 @@ project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-def evaluate_property(model: torch.nn.Module, loader: torch.utils.data.DataLoader, property_index: int, property_name: str, scalers: Dict[str, Any] = None) -> Dict[str, float]:
+# Import from inference.py
+from GUI.core.inference import (
+    init_hybrid_engine,
+    run_hybrid_regression,
+    run_hybrid_regression_with_confidence,
+    _descale_prediction_values,
+    _PROPERTY_NAMES as TARGET_COLS, # Use property names from the authoritative source
+)
+
+def evaluate_all_properties_with_inference(
+    smiles_list: List[str],
+    true_targets: np.ndarray,
+    target_cols: List[str],
+    model_path: str = None,
+    n_conformers: int = 3
+) -> Dict[str, Dict[str, float]]:
     """
-    Evaluates the model on a dataset for a specific property index.
-    
-    Args:
-        model: The trained HybridFusionModel.
-        loader: DataLoader for the dataset (HybridDataset).
-        property_index: The index of the property in the output tensor.
-        property_name: Name of the property for scaling and logging.
-        scalers: Dictionary of scalers to inverse transform the data.
-
-    Returns:
-        A dictionary containing RMSE, MAE, and R^2 scores.
+    Evaluates the model on all properties using the inference engine.
     """
-    model.eval()
-    device = next(model.parameters()).device
-    
-    true_values = []
-    predicted_values = []
+    try:
+        init_hybrid_engine(model_path=model_path)
+        print("Hybrid inference engine initialized.")
+    except Exception as e:
+        print(f"Failed to initialize hybrid engine: {e}")
+        return {col: {'RMSE': 0.0, 'MAE': 0.0, 'R^2': 0.0} for col in target_cols}
 
-    with torch.no_grad():
-        for batch in loader:
-            graph_data = batch['graph'].to(device)
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            targets = batch['target']
-            nan_mask = batch['nan_mask']
-
-            outputs = model(graph_data, input_ids, attention_mask).cpu()
-            
-            # Filter by nan_mask for the specific property
-            mask = nan_mask[:, property_index] == 1
-            if mask.any():
-                p = outputs[mask, property_index].detach().numpy()
-                t = targets[mask, property_index].detach().numpy()
-                
-                if scalers and property_name in scalers:
-                    p = scalers[property_name].inverse_transform(p.reshape(-1, 1)).flatten()
-                    t = scalers[property_name].inverse_transform(t.reshape(-1, 1)).flatten()
-                
-                predicted_values.extend(p)
-                true_values.extend(t)
-
-    if len(true_values) < 2:
-        if len(true_values) == 1:
-            rmse = float(np.abs(true_values[0] - predicted_values[0]))
-            mae = rmse
-            return {'RMSE': rmse, 'MAE': mae, 'R^2': 0.0}
-        return {'RMSE': 0.0, 'MAE': 0.0, 'R^2': 0.0}
-
-    rmse = np.sqrt(mean_squared_error(true_values, predicted_values))
-    mae = mean_absolute_error(true_values, predicted_values)
-    r2 = r2_score(true_values, predicted_values)
-
-    return {
-        'RMSE': rmse,
-        'MAE': mae,
-        'R^2': r2
-    }
-
-def evaluate_all_properties(model: torch.nn.Module, loader: torch.utils.data.DataLoader, target_cols: List[str], scalers: Dict[str, Any] = None) -> Dict[str, Dict[str, float]]:
-    """
-    Evaluates the model on all properties using a single forward pass over the data loader.
-    """
-    model.eval()
-    device = next(model.parameters()).device
-    
     all_preds = []
-    all_targets = []
-    all_masks = []
-    
-    with torch.no_grad():
-        for batch in loader:
-            graph_data = batch['graph'].to(device)
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            targets = batch['target']
-            nan_mask = batch['nan_mask']
-            
-            outputs = model(graph_data, input_ids, attention_mask).cpu()
-            
-            all_preds.append(outputs.detach())
-            all_targets.append(targets.detach())
-            all_masks.append(nan_mask.detach())
-            
-    y_pred = torch.cat(all_preds, dim=0).numpy()
-    y_true = torch.cat(all_targets, dim=0).numpy()
-    y_mask = torch.cat(all_masks, dim=0).numpy()
-    
+    failures = []
+
+    for i, smiles in enumerate(smiles_list):
+        try:
+            # Using confidence version to get more stable predictions, can be set to 1 conformer for speed
+            if n_conformers > 1:
+                result = run_hybrid_regression_with_confidence(
+                    smiles,
+                    model_path=model_path,
+                    n_conformers=n_conformers,
+                    apply_descaling=True,
+                )
+                prediction = result['prediction']
+            else:
+                # Fallback to single run if n_conformers is 1
+                prediction = run_hybrid_regression(smiles, model_path=model_path)
+                prediction = _descale_prediction_values(prediction, smiles=smiles)
+
+            all_preds.append(prediction)
+        except Exception as exc:
+            failures.append((smiles, str(exc)))
+            # Add a placeholder for failed predictions to keep alignment with true_targets
+            all_preds.append(np.full(len(target_cols), np.nan))
+        
+        if (i + 1) % 100 == 0:
+            print(f"Processed {i + 1}/{len(smiles_list)} molecules...")
+
+    if failures:
+        print(f"\nEncountered {len(failures)} failures during inference.")
+        for smiles, reason in failures[:5]:
+            print(f"  - {smiles}: {reason}")
+        if len(failures) > 5:
+            print(f"  ... and {len(failures) - 5} more.")
+
+    y_pred = np.array(all_preds)
+    y_true = true_targets
+
     results = {}
     for i, col in enumerate(target_cols):
-        valid_idx = y_mask[:, i] == 1
-        if valid_idx.any():
-            p = y_pred[valid_idx, i]
-            t = y_true[valid_idx, i]
-            
-            if scalers and col in scalers:
-                p = scalers[col].inverse_transform(p.reshape(-1, 1)).flatten()
-                t = scalers[col].inverse_transform(t.reshape(-1, 1)).flatten()
-                
-            if len(t) < 2:
-                if len(t) == 1:
-                    rmse = float(np.abs(t[0] - p[0]))
-                    mae = rmse
-                    r2 = 0.0
-                else:
-                    rmse, mae, r2 = 0.0, 0.0, 0.0
+        # Filter out NaNs from failed predictions
+        valid_idx = ~np.isnan(y_pred[:, i]) & ~np.isnan(y_true[:, i])
+        
+        p = y_pred[valid_idx, i]
+        t = y_true[valid_idx, i]
+
+        if len(t) < 2:
+            if len(t) == 1:
+                rmse = float(np.abs(t[0] - p[0]))
+                mae = rmse
+                r2 = 0.0
             else:
-                rmse = np.sqrt(mean_squared_error(t, p))
-                mae = mean_absolute_error(t, p)
-                r2 = r2_score(t, p)
-                
-            results[col] = {'RMSE': rmse, 'MAE': mae, 'R^2': r2}
+                rmse, mae, r2 = 0.0, 0.0, 0.0
         else:
-            results[col] = {'RMSE': 0.0, 'MAE': 0.0, 'R^2': 0.0}
+            rmse = np.sqrt(mean_squared_error(t, p))
+            mae = mean_absolute_error(t, p)
+            r2 = r2_score(t, p)
+            
+        results[col] = {'RMSE': rmse, 'MAE': mae, 'R^2': r2}
             
     return results
 
@@ -155,7 +125,7 @@ def plot_results(results: Dict[str, float], property_name: str, save_dir: str = 
     plt.title(f'Evaluation Metrics: {property_name}')
     plt.ylabel('Score')
     if values:
-        plt.ylim(0, max(values) * 1.2)
+        plt.ylim(0, max(values) * 1.2 if max(values) > 0 else 1)
     plt.tight_layout()
     
     filename = f'{property_name}_evaluation.png'
@@ -168,63 +138,38 @@ def plot_results(results: Dict[str, float], property_name: str, save_dir: str = 
     plt.savefig(save_path)
     plt.close()
 
-def evaluate(model: torch.nn.Module, loader: torch.utils.data.DataLoader, property_index: int, property_name: str, scalers: Dict[str, Any] = None, save_dir: str = None):
-    """
-    Helper to run evaluation and plotting for a specific property.
-    """
-    print(f"Evaluating {property_name}...")
-    results = evaluate_property(model, loader, property_index, property_name, scalers)
-    print(f"Results for {property_name}: {results}")
-    plot_results(results, property_name, save_dir=save_dir)
-
 if __name__ == "__main__":
-    from main import HybridFusionModel, TOKENIZED_CACHE_PATH
+    # Construct absolute paths from the project root
+    TOKENIZED_CACHE_PATH = project_root / "Transformers_2/outputs/cache/tokenized_dataset.pt"
+    MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
+    ATOM_CSV_PATH = project_root / "Dataset/New_QM9/atom_properties.csv"
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
+    # Try finding the ONNX model at various paths
+    model_path = project_root / "GUI/assets/hybrid_model.onnx"
+    if not model_path.exists():
+        print(f"ONNX model not found at {model_path}. The inference engine will try to find it.")
+        model_path = None # Let the engine resolve it
     
-    # Initialize model
-    model = HybridFusionModel(output_dim=len(TARGET_COLS)).to(device)
+    # Load data to get SMILES and targets for the validation set
+    val_smiles = []
+    val_targets = None
     
-    # Try finding the pre-trained model at various paths
-    model_path = os.environ.get("HYBRID_MODEL_OUTPUT_PATH", "best_hybrid_model.pth")
-    if not os.path.exists(model_path) and os.path.exists("models/best_hybrid_model.pth"):
-        model_path = "models/best_hybrid_model.pth"
-        
-    if os.path.exists(model_path):
-        try:
-            model.load_state_dict(torch.load(model_path, map_location=device))
-            print(f"Loaded model state from {model_path}")
-        except Exception as e:
-            print(f"Error loading model weights from {model_path}: {e}")
-    else:
-        print(f"No pre-trained model found at {model_path}; using random weights.")
-    
-    # Load scalers from the cached tokenized dataset
-    scalers = {}
-    if os.path.exists(TOKENIZED_CACHE_PATH):
-        try:
-            transformer_data = torch.load(TOKENIZED_CACHE_PATH, weights_only=False)
-            scalers = transformer_data.get('scalers', {})
-            print(f"Loaded scalers from {TOKENIZED_CACHE_PATH}")
-        except Exception as e:
-            print(f"Could not load scalers from cached dataset: {e}")
-    else:
-        print(f"No cache found at {TOKENIZED_CACHE_PATH}")
-
-    # Set up the dataloader consistent with main.py
-    test_loader = None
     try:
-        from main import MOLECULE_CSV_PATH, ATOM_CSV_PATH, HybridDataset
+        from main import HybridDataset
         from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
-        from torch_geometric.loader import DataLoader
+        
+        if TOKENIZED_CACHE_PATH.exists() and MOLECULE_CSV_PATH.exists() and ATOM_CSV_PATH.exists():
+            print("Found dataset files. Preparing validation data...")
+            
+            # Load the original molecule properties to get SMILES strings
+            df_mol = pd.read_csv(MOLECULE_CSV_PATH)
+            df_mol['molecule_id'] = df_mol['molecule_id'].astype(str)
+            smiles_map = df_mol.set_index('molecule_id')['smiles'].to_dict()
 
-        if os.path.exists(TOKENIZED_CACHE_PATH) and os.path.exists(MOLECULE_CSV_PATH) and os.path.exists(ATOM_CSV_PATH):
-            print("Found dataset files. Preparing test/validation dataloader...")
             pyg_dataset = RelationalGeometryPipeline(
-                root='GIN_2/data', 
-                mol_csv_path=MOLECULE_CSV_PATH,
-                atom_csv_path=ATOM_CSV_PATH,
+                root=str(project_root / 'GIN_2/data'), 
+                mol_csv_path=str(MOLECULE_CSV_PATH),
+                atom_csv_path=str(ATOM_CSV_PATH),
                 target_cols=TARGET_COLS
             )
             pyg_graph_list = [g for g in pyg_dataset]
@@ -250,6 +195,7 @@ if __name__ == "__main__":
             aligned_attention_masks = []
             aligned_targets = []
             aligned_nan_masks = []
+            aligned_mol_ids = []
             
             for i, mol_id in enumerate(t_mol_ids):
                 if mol_id in graph_dict:
@@ -258,6 +204,7 @@ if __name__ == "__main__":
                     aligned_attention_masks.append(t_attention_masks[i])
                     aligned_targets.append(t_targets[i])
                     aligned_nan_masks.append(t_nan_mask[i])
+                    aligned_mol_ids.append(mol_id)
                     
             if len(aligned_graphs) > 0:
                 aligned_input_ids = torch.stack(aligned_input_ids)
@@ -280,24 +227,47 @@ if __name__ == "__main__":
                 generator = torch.Generator().manual_seed(42)
                 _, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size], generator=generator)
 
-                test_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-                print(f"Loaded validation split as test loader with {len(val_dataset)} samples.")
+                val_indices = val_dataset.indices
+                
+                # Correctly get SMILES strings for the validation set
+                val_mol_ids = [aligned_mol_ids[i] for i in val_indices]
+                val_smiles = [smiles_map[mol_id] for mol_id in val_mol_ids if mol_id in smiles_map]
+
+                # Get original, unscaled targets for the validation set
+                scalers = transformer_data.get('scalers', {})
+                original_targets = torch.clone(aligned_targets)
+                if scalers:
+                    for i, col in enumerate(TARGET_COLS):
+                        if col in scalers:
+                            # Ensure the tensor is on the CPU before converting to numpy
+                            target_numpy = original_targets[:, i].cpu().numpy().reshape(-1, 1)
+                            inversed_numpy = scalers[col].inverse_transform(target_numpy)
+                            original_targets[:, i] = torch.from_numpy(inversed_numpy).squeeze()
+                
+                val_targets = original_targets[val_indices].numpy()
+                
+                print(f"Loaded validation split with {len(val_smiles)} samples.")
             else:
                 print("Warning: Could not align any molecules between Graph and Transformer datasets.")
         else:
-            print("Dataset files or tokenized cache not found. Running with test_loader = None.")
+            print("Dataset files or tokenized cache not found. Cannot run evaluation.")
     except Exception as e:
-        print(f"Could not initialize real test loader: {e}")
-        print("Continuing with test_loader = None.")
+        print(f"Could not initialize and load data: {e}")
+        print("Cannot run evaluation.")
 
-    if test_loader is not None:
-        print("Starting sequential evaluation for all properties...")
-        # Evaluate all properties in a single pass (very efficient!)
-        all_results = evaluate_all_properties(model, test_loader, TARGET_COLS, scalers)
+    if val_smiles and val_targets is not None:
+        print("Starting evaluation using inference engine...")
+        all_results = evaluate_all_properties_with_inference(
+            val_smiles, 
+            val_targets, 
+            TARGET_COLS, 
+            model_path=str(model_path) if model_path else None,
+            n_conformers=3 # Use 3 conformers for confidence, set to 1 for faster eval
+        )
         for name in TARGET_COLS:
-            res = all_results[name]
-            print(f"Results for {name}: {res}")
-            plot_results(res, name)
+            if name in all_results:
+                res = all_results[name]
+                print(f"Results for {name}: {res}")
+                plot_results(res, name, save_dir='evaluation_plots_inference')
     else:
-        print("No test loader initialized. Skipping execution.")
-
+        print("No data loaded. Skipping evaluation.")
