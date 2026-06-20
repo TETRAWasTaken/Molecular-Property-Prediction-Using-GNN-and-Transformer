@@ -4,7 +4,7 @@ import os
 import json
 from pathlib import Path
 import numpy as np
-from typing import Optional
+from typing import Optional, List
 from PySide6.QtCore import Signal, QThread
 from transformers import AutoTokenizer, AutoModel
 from rdkit import Chem
@@ -213,7 +213,7 @@ def build_graph_tensors_from_smiles(smiles, random_seed: Optional[int] = None):
 		if conf is not None:
 			pi = conf.GetAtomPosition(i)
 			pj = conf.GetAtomPosition(j)
-			distance = float(((pi.x - pj.x) ** 2 + (pi.y - pj.y) ** 2 + (pi.z - pj.z) ** 2) ** 0.5)
+			distance = (pi - pj).Length()
 		else:
 			distance = 0.0
 
@@ -379,67 +379,53 @@ def _load_property_stats():
 		return _PROPERTY_STATS_CACHE
 
 
-def _descale_prediction_values(values, smiles: str | None = None):
-	"""Descale model predictions from normalized space to physical units.
-	
-	Since the model is trained with standardized targets, this function only
-	applies inverse standardization (mean/std) for every property.
-	
-	For delta-trained energy targets (u0, u298, h298, g298), this function
-	also adds back the atomic reference energy to convert the delta value
-	to the final physical value.
-	
-	Args:
-		values: Scaled predictions array
-		smiles: SMILES string, required for delta-trained models
-		
-	Returns:
-		Descaled predictions in physical units
-	"""
-	arr = np.asarray(values, dtype=np.float32).copy()
-	stats = _load_property_stats()
-	if not isinstance(stats, dict) or not stats:
-		return arr
+def _descale_prediction_values(values, smiles: str | List[str]):
+    arr = np.asarray(values, dtype=np.float32).copy()
+    stats = _load_property_stats()
+    if not stats:
+        return arr
 
-	# Inverse scale all values using standardization stats
-	for idx, prop in enumerate(_PROPERTY_NAMES):
-		if idx >= arr.shape[0]:
-			break
-		entry = stats.get(prop)
-		if not isinstance(entry, dict):
-			continue
-		arr[idx] = (arr[idx] * float(entry['std'])) + float(entry['mean'])
+    is_batch = isinstance(smiles, list)
 
-	# For delta-trained properties, add the atomic reference energy back.
-	atom_ref = stats.get('_atom_reference_energies')
-	if smiles and isinstance(atom_ref, dict):
-		mol = Chem.MolFromSmiles(smiles)
-		if mol:
-			mol = Chem.AddHs(mol)
-			for idx, prop in enumerate(_PROPERTY_NAMES):
-				if prop in QM9_DELTA_TARGET_COLUMNS:
-					correction = add_qm9_atom_reference_correction(mol, prop, atom_ref)
-					arr[idx] += correction
-	
-	return arr
+    # Inverse scale all values using standardization stats
+    for idx, prop in enumerate(_PROPERTY_NAMES):
+        entry = stats.get(prop)
+        if not isinstance(entry, dict):
+            continue
+        
+        if arr.ndim == 1:
+            arr[idx] = (arr[idx] * float(entry['std'])) + float(entry['mean'])
+        elif arr.ndim == 2:
+            arr[:, idx] = (arr[:, idx] * float(entry['std'])) + float(entry['mean'])
+
+    # For delta-trained properties, add the atomic reference energy back.
+    atom_ref = stats.get('_atom_reference_energies')
+    if not (smiles and isinstance(atom_ref, dict)):
+        return arr
+
+    smiles_list = smiles if is_batch else [smiles]
+    for i, s in enumerate(smiles_list):
+        mol = Chem.MolFromSmiles(s)
+        if not mol:
+            continue
+        mol = Chem.AddHs(mol)
+        for idx, prop in enumerate(_PROPERTY_NAMES):
+            if prop in QM9_DELTA_TARGET_COLUMNS:
+                correction = add_qm9_atom_reference_correction(mol, prop, atom_ref)
+                if arr.ndim == 1:
+                    arr[idx] += correction
+                else:
+                    arr[i, idx] += correction
+    return arr
 
 
 def _descale_spread_values(values):
-	"""Descale spread (uncertainty) values to physical units.
-	
-	For energy properties (u0, u298, h298, g298):
-	- Scales from normalized to eV (multiply by std)
-	- Converts from eV uncertainty to kJ/mol uncertainty (multiply by 96.485333)
-	
-	For other properties:
-	- Scales from normalized to physical units (multiply by std)
-	"""
+	"""Descale spread (uncertainty) values to physical units."""
 	arr = np.asarray(values, dtype=np.float32).copy()
 	stats = _load_property_stats()
 	if not isinstance(stats, dict) or not stats:
 		return arr
 
-	# Import conversion constant
 	from Scripts.qm9_delta import EV_TO_KJMOL
 
 	for idx, prop in enumerate(_PROPERTY_NAMES):
@@ -449,10 +435,8 @@ def _descale_spread_values(values):
 		if not isinstance(entry, dict):
 			continue
 		
-		# Step 1: Scale spread by std (now in eV for energy properties)
 		arr[idx] = arr[idx] * float(entry['std'])
 		
-		# Step 2: For energy properties, convert units from eV to kJ/mol
 		if prop in QM9_DELTA_TARGET_COLUMNS:
 			arr[idx] = arr[idx] * EV_TO_KJMOL
 	
@@ -856,43 +840,6 @@ class EngineWarmupThread(QThread):
 			self.error.emit(str(exc))
 
 
-def _get_tokenizer():
-	global _TOKENIZER
-	global _TOKENIZER_FALLBACK_WARNED
-	if _TOKENIZER is None:
-		try:
-			model_path = _resolve_explainability_model_path()
-			_TOKENIZER = AutoTokenizer.from_pretrained(
-				str(model_path),
-				local_files_only=True,
-			)
-		except FileNotFoundError:
-			# Prediction should still work even when explainability assets are missing.
-			# Keep a deterministic lightweight tokenizer fallback for ONNX inference input.
-			if not _TOKENIZER_FALLBACK_WARNED:
-				print(
-					'[Inference] Attention model/tokenizer not found. '
-					'Using fallback tokenizer for prediction. '
-					'Attention visualization will be unavailable.'
-				)
-				_TOKENIZER_FALLBACK_WARNED = True
-			_TOKENIZER = None
-	return _TOKENIZER
-
-
-def _get_transformer_model():
-	global _TRANSFORMER_MODEL
-	if _TRANSFORMER_MODEL is None:
-		model_path = _resolve_explainability_model_path()
-		_TRANSFORMER_MODEL = AutoModel.from_pretrained(
-			str(model_path),
-			attn_implementation='eager',
-			local_files_only=True,
-		)
-		_TRANSFORMER_MODEL.eval()
-	return _TRANSFORMER_MODEL
-
-
 def _looks_like_hf_model_dir(path_obj):
 	if not path_obj.is_dir():
 		return False
@@ -948,127 +895,33 @@ def _resolve_explainability_model_path():
 	)
 
 
-def _extract_atom_spans(smiles):
-	spans = []
-	i = 0
-	organic_subset = set('BCNOPSFIbcnops')
-	while i < len(smiles):
-		ch = smiles[i]
-		if ch == '[':
-			j = smiles.find(']', i + 1)
-			if j == -1:
-				break
-			spans.append((i, j + 1))
-			i = j + 1
-			continue
-		if i + 1 < len(smiles):
-			two = smiles[i:i + 2]
-			if two in ('Br', 'Cl'):
-				spans.append((i, i + 2))
-				i += 2
-				continue
-		if ch in organic_subset:
-			spans.append((i, i + 1))
-		i += 1
-	return spans
-
-
-def _score_overlap(span_a, span_b):
-	left = max(span_a[0], span_b[0])
-	right = min(span_a[1], span_b[1])
-	return max(0, right - left)
-
-
-def compute_transformer_explainability(smiles):
-	"""Return atom and bond attention scores derived from transformer self-attention."""
-	smiles = (smiles or '').strip()
-	if not smiles:
-		raise ValueError('SMILES is empty')
-
-	mol = Chem.MolFromSmiles(smiles)
-	if mol is None:
-		raise ValueError(f'Invalid SMILES: {smiles}')
-
-	tokenizer = _get_tokenizer()
-	model = _get_transformer_model()
-
-	encoded = tokenizer(
-		smiles,
-		return_tensors='pt',
-		truncation=True,
-		max_length=_MAX_SEQ_LEN,
-		return_offsets_mapping=True,
-	)
-	offsets = encoded.pop('offset_mapping')[0].tolist()
-
-	with torch.no_grad():
-		outputs = model(**encoded, output_attentions=True)
-
-	attentions = outputs.attentions
-	if not attentions:
-		raise RuntimeError('Transformer did not return attention tensors')
-
-	# [layers, heads, seq, seq] -> [seq, seq]
-	stack = torch.stack(attentions, dim=0)[:, 0, :, :, :]
-	attn_matrix = stack.mean(dim=(0, 1)).cpu().numpy()
-	seq_len = attn_matrix.shape[0]
-
-	# Blend CLS->token and token->CLS as a stable token saliency signal.
-	token_scores = (attn_matrix[0, :] + attn_matrix[:, 0]) * 0.5
-
-	atom_spans = _extract_atom_spans(smiles)
-	n_atoms = mol.GetNumAtoms()
-	atom_scores = np.zeros((n_atoms,), dtype=np.float32)
-	atom_hits = np.zeros((n_atoms,), dtype=np.float32)
-
-	n_atoms_to_map = min(n_atoms, len(atom_spans))
-	for token_idx in range(seq_len):
-		if token_idx >= len(offsets):
-			break
-		start, end = offsets[token_idx]
-		if end <= start:
-			continue
-		token_span = (int(start), int(end))
-		best_atom = -1
-		best_overlap = 0
-		for atom_idx in range(n_atoms_to_map):
-			overlap = _score_overlap(token_span, atom_spans[atom_idx])
-			if overlap > best_overlap:
-				best_overlap = overlap
-				best_atom = atom_idx
-		if best_atom >= 0:
-			score = float(token_scores[token_idx])
-			atom_scores[best_atom] += score
-			atom_hits[best_atom] += 1.0
-
-	for atom_idx in range(n_atoms):
-		if atom_hits[atom_idx] > 0:
-			atom_scores[atom_idx] /= atom_hits[atom_idx]
-
-	max_score = float(np.max(atom_scores)) if atom_scores.size else 0.0
-	if max_score > 1e-8:
-		atom_scores = atom_scores / max_score
-
-	bond_scores = []
-	for bond in mol.GetBonds():
-		i = bond.GetBeginAtomIdx()
-		j = bond.GetEndAtomIdx()
-		score = float((atom_scores[i] + atom_scores[j]) * 0.5)
-		bond_scores.append({
-			'begin': int(i),
-			'end': int(j),
-			'score': score,
-		})
-
-	return {
-		'atom_scores': atom_scores.astype(np.float32).tolist(),
-		'bond_scores': bond_scores,
-	}
+def _get_tokenizer():
+	global _TOKENIZER
+	global _TOKENIZER_FALLBACK_WARNED
+	if _TOKENIZER is None:
+		try:
+			model_path = _resolve_explainability_model_path()
+			_TOKENIZER = AutoTokenizer.from_pretrained(
+				str(model_path),
+				local_files_only=True,
+			)
+		except FileNotFoundError:
+			# Prediction should still work even when explainability assets are missing.
+			# Keep a deterministic lightweight tokenizer fallback for ONNX inference input.
+			if not _TOKENIZER_FALLBACK_WARNED:
+				print(
+					'[Inference] Attention model/tokenizer not found. '
+					'Using fallback tokenizer for prediction. '
+					'Attention visualization will be unavailable.'
+				)
+				_TOKENIZER_FALLBACK_WARNED = True
+			_TOKENIZER = 'fallback'
+	return _TOKENIZER
 
 
 def _encode_smiles(smiles):
 	tokenizer = _get_tokenizer()
-	if tokenizer is None:
+	if tokenizer == 'fallback' or not hasattr(tokenizer, 'batch_encode_plus'):
 		# Fallback tokenization: simple byte-level ids with [CLS]=101, [SEP]=102, [PAD]=0.
 		smiles = smiles or ''
 		tokens = [101]
@@ -1084,9 +937,7 @@ def _encode_smiles(smiles):
 			input_ids = tokens[:_MAX_SEQ_LEN]
 			attention_mask = [1] * _MAX_SEQ_LEN
 
-		input_ids = np.ascontiguousarray(np.asarray([input_ids], dtype=np.int64))
-		attention_mask = np.ascontiguousarray(np.asarray([attention_mask], dtype=np.int64))
-		return input_ids, attention_mask
+		return np.ascontiguousarray(np.asarray([input_ids], dtype=np.int64)), np.ascontiguousarray(np.asarray([attention_mask], dtype=np.int64))
 
 	encoded = tokenizer(
 		smiles,

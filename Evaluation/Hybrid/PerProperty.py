@@ -59,7 +59,7 @@ def evaluate_all_properties_with_inference(
     target_cols: List[str],
     model_path: str = None,
     n_conformers: int = 3,
-    n_workers: int = 5
+    n_workers: int = -1
 ) -> Dict[str, Dict[str, float]]:
     """
     Evaluates the model on all properties using the ONNX inference engine,
@@ -127,7 +127,7 @@ if __name__ == "__main__":
     model_path = None
 
     # Number of worker processes to use. -1 means use all available CPU cores.
-    N_WORKERS = -1
+    N_WORKERS = 3
 
     # --- Data Loading ---
     test_smiles = []
