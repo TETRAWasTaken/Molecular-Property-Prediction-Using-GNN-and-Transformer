@@ -150,5 +150,10 @@ if __name__ == "__main__":
         print(results_df.to_string(float_format="%.4f"))
         print("----------------------------------------------\n")
 
+        # Save results to a CSV file
+        output_path = Path(__file__).resolve().parent / "evaluation_results.csv"
+        results_df.to_csv(output_path, float_format="%.4f")
+        print(f"Results saved to {output_path}")
+
     else:
         print("No data loaded. Skipping evaluation.")
