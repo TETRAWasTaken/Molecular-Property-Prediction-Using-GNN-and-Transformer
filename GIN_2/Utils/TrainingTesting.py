@@ -71,6 +71,20 @@ class TrainingTesting(GIN):
         
         return y_true_norm, mask
 
+    def inverse_transform(self, scaled_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        De-normalizes a tensor of predictions or targets using the stored
+        mean and standard deviation.
+        """
+        if self.target_mean is None or self.target_std is None:
+            return scaled_tensor
+        
+        # Ensure stats are on the same device as the input tensor
+        mean = self.target_mean.to(scaled_tensor.device)
+        std = self.target_std.to(scaled_tensor.device)
+        
+        return scaled_tensor * std + mean
+
     def train_epoch(self, loader: DataLoader) -> float:
         self.train() 
         total_loss = 0.0
@@ -119,14 +133,8 @@ class TrainingTesting(GIN):
         val_loss = ((torch.abs(y_pred_norm - y_true_norm) * y_mask).sum() / y_mask.sum()).item()
 
         # Denormalize for physical metrics (MAE and R2)
-        if self.target_mean is None or self.target_std is None:
-            y_pred_denorm = y_pred_norm
-            y_true_denorm = y_true_norm
-        else:
-            mean_cpu = self.target_mean.detach().cpu().view(1, -1)
-            std_cpu = self.target_std.detach().cpu().view(1, -1)
-            y_pred_denorm = y_pred_norm * std_cpu + mean_cpu
-            y_true_denorm = y_true_norm * std_cpu + mean_cpu
+        y_pred_denorm = self.inverse_transform(y_pred_norm.to(self.device_name)).cpu()
+        y_true_denorm = self.inverse_transform(y_true_norm.to(self.device_name)).cpu()
             
         mae_per_prop = []
         r2_per_prop = []

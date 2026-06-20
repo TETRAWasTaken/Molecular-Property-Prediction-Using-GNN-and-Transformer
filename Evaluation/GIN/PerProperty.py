@@ -4,8 +4,6 @@ from pathlib import Path
 import torch
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from typing import Dict, Any, List
 
@@ -16,7 +14,9 @@ if str(project_root) not in sys.path:
 
 from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
 from GIN_2.Utils.TrainingTesting import TrainingTesting
-from GIN_2.manual_run import get_dataset_stats
+from torch_geometric.loader import DataLoader
+from torch_geometric.data import Data
+from Scripts.qm9_delta import apply_qm9_delta_learning
 
 def evaluate_all_properties(
     model: torch.nn.Module,
@@ -36,12 +36,12 @@ def evaluate_all_properties(
             batch = batch.to(device)
             predictions = model(batch)
             
-            # Inverse scale the predictions and targets
+            # Inverse scale the predictions to get them back to the delta-corrected space
             scaled_preds = model.inverse_transform(predictions)
-            scaled_targets = model.inverse_transform(batch.y)
             
             all_preds.append(scaled_preds.cpu())
-            all_targets.append(scaled_targets.cpu())
+            # The 'y' from the loader is already the delta-corrected target
+            all_targets.append(batch.y.cpu())
 
     y_pred = torch.cat(all_preds, dim=0).numpy()
     y_true = torch.cat(all_targets, dim=0).numpy()
@@ -62,66 +62,54 @@ def evaluate_all_properties(
             
     return results
 
-def plot_results(results: Dict[str, float], property_name: str, save_dir: str):
-    """
-    Plots the evaluation results and saves them to a file.
-    """
-    metrics = list(results.keys())
-    values = list(results.values())
-
-    plt.figure(figsize=(8, 5))
-    sns.barplot(x=metrics, y=values)
-    plt.title(f'GIN Evaluation Metrics: {property_name}')
-    plt.ylabel('Score')
-    if values:
-        plt.ylim(0, max(values) * 1.2 if max(values) > 0 else 1)
-    plt.tight_layout()
-    
-    filename = f'{property_name}_evaluation.png'
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, filename)
-        
-    plt.savefig(save_path)
-    plt.close()
-
 if __name__ == "__main__":
+    
     # --- Configuration ---
     TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    
     MODEL_PATH = project_root / "models/GIN_model.pth"
     MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
-    ATOM_CSV_PATH = project_root / "Dataset/New_QM9/atom_properties.csv"
-    SAVE_DIR = project_root / "evaluation_plots_gin"
-
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # The pipeline will use its own cache path, so we just need the root
+    PIPELINE_ROOT = str(project_root / "GIN_2/data")
 
     # --- Data Loading ---
-    test_loader = None
-    node_in_dim, edge_in_dim = 0, 0
+    if not MOLECULE_CSV_PATH.exists():
+        print(f"FATAL: Molecule CSV not found at {MOLECULE_CSV_PATH}")
+        sys.exit(1)
+
+    print("Initializing data pipeline to get test loader...")
+    pipeline = RelationalGeometryPipeline(
+        root=PIPELINE_ROOT, 
+        mol_csv_path=str(MOLECULE_CSV_PATH),
+        # Assuming atom_properties.csv is in the same directory
+        atom_csv_path=str(MOLECULE_CSV_PATH).replace("molecule_properties.csv", "atom_properties.csv"),
+        target_cols=TARGET_COLS
+    )
     
-    if MOLECULE_CSV_PATH.exists() and ATOM_CSV_PATH.exists():
-        print("Found dataset files. Preparing test dataloader...")
-        
-        target_mean, target_std = get_dataset_stats(str(MOLECULE_CSV_PATH), TARGET_COLS)
-        
-        pipeline = RelationalGeometryPipeline(
-            root=str(project_root / 'GIN_2/data'), 
-            mol_csv_path=str(MOLECULE_CSV_PATH),
-            atom_csv_path=str(ATOM_CSV_PATH),
-            target_cols=TARGET_COLS
-        )
-        
-        _, _, test_loader = pipeline.get_loaders(batch_size=64)
-        
-        sample_batch = next(iter(test_loader))
-        node_in_dim = sample_batch.num_node_features
-        edge_in_dim = sample_batch.edge_attr.shape[1]
-        
-        print(f"Loaded test loader with {len(test_loader.dataset)} samples.")
-    else:
-        print("Dataset files not found. Cannot run evaluation.")
+    # The get_loaders method provides train/val/test splits
+    _, _, test_loader = pipeline.get_loaders(batch_size=64)
+    
+    print(f"Loaded test loader with {len(test_loader.dataset)} samples.")
 
     # --- Model Initialization and Evaluation ---
     if test_loader and MODEL_PATH.exists():
+        # Calculate stats from the original CSV for model initialization
+        df_mol = pd.read_csv(MOLECULE_CSV_PATH)
+        # Apply the same delta learning to the stats calculation
+        df_mol_delta = apply_qm9_delta_learning(df_mol.copy(), smiles_col='smiles', target_cols=TARGET_COLS)
+        
+        mean_vals = df_mol_delta[TARGET_COLS].mean().values
+        std_vals = df_mol_delta[TARGET_COLS].std().values
+        target_mean = torch.tensor(mean_vals, dtype=torch.float32)
+        target_std = torch.tensor(std_vals, dtype=torch.float32)
+
+        # Dynamically get model dimensions from the loaded data
+        sample_batch = next(iter(test_loader))
+        node_in_dim = sample_batch.num_node_features
+        edge_in_dim = sample_batch.edge_attr.shape[1]
+
         model = TrainingTesting(
             node_in_dim=node_in_dim,
             edge_in_dim=edge_in_dim,
@@ -140,16 +128,19 @@ if __name__ == "__main__":
             print(f"Loaded GIN model state from {MODEL_PATH}")
         except Exception as e:
             print(f"Error loading model weights: {e}")
-            exit()
+            sys.exit(1)
 
-        print("Starting evaluation for all properties...")
+        print("\nStarting evaluation for all properties...")
         all_results = evaluate_all_properties(model, test_loader, TARGET_COLS, DEVICE)
         
-        for name, res in all_results.items():
-            print(f"Results for {name}: {res}")
-            plot_results(res, name, str(SAVE_DIR))
+        # Format results into a single pandas DataFrame
+        results_df = pd.DataFrame.from_dict(all_results, orient='index')
+        results_df.index.name = 'Property'
         
-        print(f"\nEvaluation complete. Plots saved to: {SAVE_DIR}")
+        print("\n--- GIN Model Evaluation Results ---")
+        print(results_df.to_string(float_format="%.4f"))
+        print("------------------------------------\n")
+        
     elif not MODEL_PATH.exists():
         print(f"Model not found at {MODEL_PATH}. Skipping evaluation.")
     else:

@@ -4,8 +4,6 @@ from pathlib import Path
 import torch
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from typing import Dict, Any, List
 
@@ -52,7 +50,7 @@ def evaluate_all_properties(
         p_scaled = y_pred_scaled[:, i]
         t_scaled = y_true_scaled[:, i]
 
-        # Inverse transform predictions and targets to original scale
+        # Inverse transform both predictions and targets to the delta-corrected space
         if scalers and col in scalers:
             p = scalers[col].inverse_transform(p_scaled.reshape(-1, 1)).flatten()
             t = scalers[col].inverse_transform(t_scaled.reshape(-1, 1)).flatten()
@@ -70,64 +68,41 @@ def evaluate_all_properties(
             
     return results
 
-def plot_results(results: Dict[str, float], property_name: str, save_dir: str):
-    """
-    Plots the evaluation results and saves them to a file.
-    """
-    metrics = list(results.keys())
-    values = list(results.values())
-
-    plt.figure(figsize=(8, 5))
-    sns.barplot(x=metrics, y=values)
-    plt.title(f'Transformer Evaluation Metrics: {property_name}')
-    plt.ylabel('Score')
-    if values:
-        plt.ylim(0, max(values) * 1.2 if max(values) > 0 else 1)
-    plt.tight_layout()
-    
-    filename = f'{property_name}_evaluation.png'
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, filename)
-        
-    plt.savefig(save_path)
-    plt.close()
-
 if __name__ == "__main__":
     # --- Configuration ---
     TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
     MODEL_NAME = "seyonec/ChemBERTa-zinc-base-v1"
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
     MODEL_PATH = project_root / "models/transformer_molecular_model.pth"
     MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
     CACHE_PATH = project_root / "Transformers_2/outputs/cache/tokenized_dataset.pt"
-    SAVE_DIR = project_root / "evaluation_plots_transformer"
-
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- Data Loading ---
-    test_loader = None
-    scalers = {}
+    if not MOLECULE_CSV_PATH.exists():
+        print(f"Molecule properties CSV not found at {MOLECULE_CSV_PATH}. Cannot run evaluation.")
+        sys.exit(1)
 
-    if MOLECULE_CSV_PATH.exists():
-        print("Found dataset files. Preparing test dataloader from cache or by tokenizing...")
+    print("Preparing test dataloader from cache or by tokenizing...")
+    tokeniser = Tokeniser(
+        mol_path=str(MOLECULE_CSV_PATH),
+        model_name=MODEL_NAME,
+        target_cols=TARGET_COLS,
+        cache_path=str(CACHE_PATH),
+        force_rebuild=False,
+        use_cache=True,
+        verbose=True
+    )
+    
+    artifacts = tokeniser.run_tokenizer(verbose=True)
+    test_loader = artifacts["test_loader"]
+    scalers = artifacts["scalers"]
+    
+    if not test_loader:
+        print("Failed to create test loader. Exiting.")
+        sys.exit(1)
         
-        # This will either load from cache or run the tokenizer
-        tokeniser = Tokeniser(
-            mol_path=str(MOLECULE_CSV_PATH),
-            model_name=MODEL_NAME,
-            target_cols=TARGET_COLS,
-            cache_path=str(CACHE_PATH),
-            force_rebuild=False, # Use cache if it exists
-            use_cache=True,
-            verbose=True
-        )
-        
-        artifacts = tokeniser.run_tokenizer(verbose=True)
-        test_loader = artifacts["test_loader"]
-        scalers = artifacts["scalers"]
-        
-        print(f"Loaded test loader with {len(test_loader.dataset)} samples.")
-    else:
-        print("Molecule properties CSV not found. Cannot run evaluation.")
+    print(f"Loaded test loader with {len(test_loader.dataset)} samples.")
 
     # --- Model Initialization and Evaluation ---
     if test_loader and MODEL_PATH.exists():
@@ -138,16 +113,19 @@ if __name__ == "__main__":
             print(f"Loaded Transformer model state from {MODEL_PATH}")
         except Exception as e:
             print(f"Error loading model weights: {e}")
-            exit()
+            sys.exit(1)
 
-        print("Starting evaluation for all properties...")
+        print("\nStarting evaluation for all properties...")
         all_results = evaluate_all_properties(model, test_loader, TARGET_COLS, scalers, DEVICE)
         
-        for name, res in all_results.items():
-            print(f"Results for {name}: {res}")
-            plot_results(res, name, str(SAVE_DIR))
+        # Format results into a single pandas DataFrame
+        results_df = pd.DataFrame.from_dict(all_results, orient='index')
+        results_df.index.name = 'Property'
         
-        print(f"\nEvaluation complete. Plots saved to: {SAVE_DIR}")
+        print("\n--- Transformer Model Evaluation Results ---")
+        print(results_df.to_string(float_format="%.4f"))
+        print("------------------------------------------\n")
+
     elif not MODEL_PATH.exists():
         print(f"Model not found at {MODEL_PATH}. Please ensure the Transformer model has been trained.")
     else:
