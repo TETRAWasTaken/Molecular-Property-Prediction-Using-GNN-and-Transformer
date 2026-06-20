@@ -385,13 +385,13 @@ def _descale_prediction_values(values, smiles: str | None = None):
 	Since the model is trained with standardized targets, this function only
 	applies inverse standardization (mean/std) for every property.
 	
-	Energy targets (u0, u298, h298, g298) are already represented in the same
-	units as the stats file used during training/inference, so no additional
-	unit conversion is applied here.
+	For delta-trained energy targets (u0, u298, h298, g298), this function
+	also adds back the atomic reference energy to convert the delta value
+	to the final physical value.
 	
 	Args:
 		values: Scaled predictions array
-		smiles: Optional SMILES string (not used for delta-trained model)
+		smiles: SMILES string, required for delta-trained models
 		
 	Returns:
 		Descaled predictions in physical units
@@ -409,6 +409,17 @@ def _descale_prediction_values(values, smiles: str | None = None):
 		if not isinstance(entry, dict):
 			continue
 		arr[idx] = (arr[idx] * float(entry['std'])) + float(entry['mean'])
+
+	# For delta-trained properties, add the atomic reference energy back.
+	atom_ref = stats.get('_atom_reference_energies')
+	if smiles and isinstance(atom_ref, dict):
+		mol = Chem.MolFromSmiles(smiles)
+		if mol:
+			mol = Chem.AddHs(mol)
+			for idx, prop in enumerate(_PROPERTY_NAMES):
+				if prop in QM9_DELTA_TARGET_COLUMNS:
+					correction = add_qm9_atom_reference_correction(mol, prop, atom_ref)
+					arr[idx] += correction
 	
 	return arr
 
@@ -599,7 +610,7 @@ class BatchInferenceThread(QThread):
 					results.append((smiles, result['prediction'].tolist(), result['confidence']))
 				else:
 					pred = run_hybrid_regression(smiles, model_path=self.model_path)
-					results.append((smiles, _descale_prediction_values(pred).tolist(), None))
+					results.append((smiles, _descale_prediction_values(pred, smiles=smiles).tolist(), None))
 			except Exception as exc:
 				failures.append((smiles, str(exc)))
 
