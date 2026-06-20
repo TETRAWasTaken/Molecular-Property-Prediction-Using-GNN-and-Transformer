@@ -127,7 +127,7 @@ if __name__ == "__main__":
     model_path = None
 
     # Number of worker processes to use. -1 means use all available CPU cores.
-    N_WORKERS = 3
+    N_WORKERS = 2
 
     # --- Data Loading ---
     test_smiles = []
