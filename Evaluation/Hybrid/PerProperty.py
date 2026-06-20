@@ -59,7 +59,7 @@ def evaluate_all_properties_with_inference(
     target_cols: List[str],
     model_path: str = None,
     n_conformers: int = 3,
-    n_workers: int = -1
+    n_workers: int = 5
 ) -> Dict[str, Dict[str, float]]:
     """
     Evaluates the model on all properties using the ONNX inference engine,
@@ -180,7 +180,7 @@ if __name__ == "__main__":
             test_targets,
             TARGET_COLS,
             model_path=model_path,
-            n_conformers=3,  # Use 3 conformers for confidence, can be set to 1 for speed
+            n_conformers=1,  # Use 3 conformers for confidence, can be set to 1 for speed
             n_workers=N_WORKERS
         )
 
