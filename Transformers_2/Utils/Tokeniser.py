@@ -233,7 +233,7 @@ class Tokeniser:
             
         with ProgressBar():
             # We compute() here to finalize the Dask graph into a Pandas DataFrame
-            self.df = self.ddf.map_partitions(apply_canon).compute(scheduler='processes')
+            self.df = self.ddf.map_partitions(apply_canon, meta=meta_df).compute(scheduler='processes')
 
         # Drop invalid SMILES strings
         self.df = self.df[self.df['smiles'].notna()]
