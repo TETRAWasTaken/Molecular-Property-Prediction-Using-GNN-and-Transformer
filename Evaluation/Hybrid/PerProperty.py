@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
     TOKENIZED_CACHE_PATH = project_root / "Transformers_2/outputs/cache/tokenized_dataset.pt"
     MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
-    model_path, N_WORKERS, N_CONFORMERS = None, 1, 1
+    model_path, N_WORKERS, N_CONFORMERS = None, -1, 1  # -1 uses cpu_count() for parallel processing
 
     if not (TOKENIZED_CACHE_PATH.exists() and MOLECULE_CSV_PATH.exists()):
         print("Dataset files not found. Cannot run evaluation.")
@@ -104,24 +104,31 @@ if __name__ == "__main__":
 
     print("Preparing test data...")
     df_mol = pd.read_csv(MOLECULE_CSV_PATH)
-    df_mol['molecule_id'] = df_mol['molecule_id'].astype(str)
+    df_mol['molecule_id'] = df_mol['molecule_id'].astype(str).str.strip()
     smiles_map = df_mol.set_index('molecule_id')['smiles'].to_dict()
     transformer_data = torch.load(TOKENIZED_CACHE_PATH, weights_only=False)
     t_mol_ids = [str(m).strip() for m in transformer_data['mol_ids']]
-    df_mol_aligned = df_mol[df_mol['molecule_id'].isin(t_mol_ids)].set_index('molecule_id').loc[t_mol_ids]
-    original_targets_aligned = df_mol_aligned[TARGET_COLS].values
+
+    # Ensure we strictly use mol_ids that exist in both the cache and the CSV
+    # This completely prevents KeyErrors and array misalignment
+    valid_mol_ids = [m for m in t_mol_ids if m in smiles_map]
+    if len(valid_mol_ids) != len(t_mol_ids):
+        print(f"Warning: Found {len(t_mol_ids) - len(valid_mol_ids)} missing molecule IDs in CSV.")
+
+    df_mol_aligned = df_mol.set_index('molecule_id').loc[valid_mol_ids]
+    original_targets_aligned = df_mol_aligned[TARGET_COLS].to_numpy(dtype=np.float64)
 
     for i, col in enumerate(TARGET_COLS):
         if col in ['u0', 'u298', 'h298', 'g298', 'zpve', 'gap', 'homo', 'lumo']:
             original_targets_aligned[:, i] *= HARTREE_TO_EV
 
-    n_samples = len(t_mol_ids)
+    n_samples = len(valid_mol_ids)
     train_size, val_size = int(0.8 * n_samples), int(0.1 * n_samples)
     test_size = n_samples - train_size - val_size
     generator = torch.Generator().manual_seed(42)
     _, _, test_indices_subset = torch.utils.data.random_split(range(n_samples), [train_size, val_size, test_size], generator=generator)
     test_indices = test_indices_subset.indices
-    test_smiles = [smiles_map[mol_id] for mol_id in [t_mol_ids[i] for i in test_indices] if mol_id in smiles_map]
+    test_smiles = [smiles_map[valid_mol_ids[i]] for i in test_indices]
     test_targets = original_targets_aligned[test_indices]
     print(f"Loaded test split with {len(test_smiles)} samples.")
 

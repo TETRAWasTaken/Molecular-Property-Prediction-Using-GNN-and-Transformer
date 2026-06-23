@@ -286,9 +286,11 @@ def _descale_prediction_values(values, smiles: str | List[str]):
                 correction = 0.0
                 prop_refs = atom_ref_payload.get(prop, {})
                 for atom in mol.GetAtoms():
-                    correction += prop_refs.get(atom.GetSymbol(), 0.0)
+                            val = prop_refs.get(atom.GetSymbol(), 0.0)
+                            # Enforce negative sign: free atom energies are physically negative
+                            correction -= abs(val)
 
-                # This is the key fix: ADD the negative reference energy
+                        # Recover Total Energy by adding the negative reference sum
                 if arr.ndim == 1:
                     arr[idx] += correction
                 else:
@@ -299,12 +301,10 @@ def _descale_spread_values(values):
 	arr = np.asarray(values, dtype=np.float32).copy()
 	stats = _load_property_stats()
 	if not stats: return arr
-	from Scripts.qm9_delta import EV_TO_KJMOL
 	for idx, prop in enumerate(_PROPERTY_NAMES):
 		entry = stats.get(prop)
 		if not isinstance(entry, dict): continue
 		arr[idx] = arr[idx] * float(entry['std'])
-		if prop in QM9_DELTA_TARGET_COLUMNS: arr[idx] = arr[idx] * EV_TO_KJMOL
 	return arr
 
 def _resolve_confidence_calibration_path():
