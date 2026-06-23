@@ -1,13 +1,14 @@
 import os
 import sys
 from functools import partial
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count, freeze_support
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
+import torch.multiprocessing as mp
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tqdm import tqdm
 
@@ -54,7 +55,7 @@ def evaluate_all_properties_with_inference(
 
     all_preds, failures = [], []
     processed_smiles = []
-    with Pool(processes=n_workers, initializer=init_worker, initargs=(model_path,)) as pool:
+    with mp.Pool(processes=n_workers, initializer=init_worker, initargs=(model_path,)) as pool:
         task = partial(run_inference_for_smiles, n_conformers=n_conformers)
         results_iterator = pool.imap(task, smiles_list)
         for result in tqdm(results_iterator, total=len(smiles_list), desc="Running parallel inference"):
@@ -87,9 +88,15 @@ def evaluate_all_properties_with_inference(
     return results, y_pred, y_true, processed_smiles
 
 if __name__ == "__main__":
+    freeze_support()
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+
     TOKENIZED_CACHE_PATH = project_root / "Transformers_2/outputs/cache/tokenized_dataset.pt"
     MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
-    model_path, N_WORKERS, N_CONFORMERS = None, -1, 1
+    model_path, N_WORKERS, N_CONFORMERS = None, 1, 1
 
     if not (TOKENIZED_CACHE_PATH.exists() and MOLECULE_CSV_PATH.exists()):
         print("Dataset files not found. Cannot run evaluation.")
