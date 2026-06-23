@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
     TOKENIZED_CACHE_PATH = project_root / "Transformers_2/outputs/cache/tokenized_dataset.pt"
     MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
-    model_path, N_WORKERS, N_CONFORMERS = None, -1, 1  # -1 uses cpu_count() for parallel processing
+    model_path, N_WORKERS, N_CONFORMERS = None, 1, 1  # -1 uses cpu_count() for parallel processing
 
     if not (TOKENIZED_CACHE_PATH.exists() and MOLECULE_CSV_PATH.exists()):
         print("Dataset files not found. Cannot run evaluation.")
