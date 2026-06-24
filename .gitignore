@@ -77,3 +77,4 @@ data/processed/Aspirin.png
 GUI/assets/inference_check_results.csv
 Transformers_2/outputs/evaluation_outputs.csv
 .amlignore
+GUI/assets/onnxruntime-linux-x64-1.27.0/
