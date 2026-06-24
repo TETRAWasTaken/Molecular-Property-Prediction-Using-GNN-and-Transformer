@@ -1,65 +1,132 @@
+"""ChemBERTa encoder with Dual Pooling for the hybrid fusion model.
+
+Key improvements over the baseline ``AttentionPooling`` approach:
+- **Dual Pooling**: concatenates the ``[CLS]`` token embedding (global
+  sentence-level signal) with an attention-weighted mean over non-padding
+  tokens (content-focused summary), doubling the information fed to the
+  fusion MLP.
+- **Pooling dropout**: a dropout layer on the pooled output provides light
+  regularisation before the fusion projector.
+- **``pooled_hidden_size`` attribute**: exposes the actual output dimension
+  (``hidden_size * 2``) so the fusion model can set its projector size
+  automatically without hard-coding 768.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel
 
-class AttentionPooling(nn.Module):
+
+class DualPooling(nn.Module):
+    """Concatenate the ``[CLS]`` token with an attention-weighted mean.
+
+    The ``[CLS]`` token captures a holistic sentence-level summary while the
+    attention-weighted mean emphasises the most chemically relevant tokens.
+    Combining both gives the downstream fusion MLP complementary signals.
+
+    Output dimension: ``hidden_size * 2``.
+
+    Args:
+        hidden_size: Hidden dimension of the transformer (e.g. 768).
+        dropout: Dropout probability applied to the concatenated output.
     """
-    Learns to dynamically weight the importance of each token in the sequence.
-    """
-    def __init__(self, hidden_size: int):
+
+    def __init__(self, hidden_size: int, dropout: float = 0.1) -> None:
         super().__init__()
         self.attention_scorer = nn.Linear(hidden_size, 1)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        # Calculate raw importance scores: [batch, seq_len]
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pool the transformer hidden states into a fixed-size vector.
+
+        Args:
+            hidden_states: Transformer output, shape
+                ``[batch, seq_len, hidden_size]``.
+            attention_mask: Token validity mask (1 = real, 0 = padding),
+                shape ``[batch, seq_len]``.
+
+        Returns:
+            Pooled embedding, shape ``[batch, hidden_size * 2]``.
+        """
+        # --- [CLS] token (position 0) ---
+        cls_output = hidden_states[:, 0, :]  # [batch, hidden_size]
+
+        # --- Attention-weighted mean over non-padding tokens ---
+        # Raw scores: [batch, seq_len]
         scores = self.attention_scorer(hidden_states).squeeze(-1)
-        
-        # Mask out padding tokens so Softmax pushes their weight to 0.0
+        # Push padding positions to -inf so their softmax weight → 0
         scores = scores.masked_fill(attention_mask == 0, -1e9)
-        
-        # Convert scores to probabilities
-        attn_weights = F.softmax(scores, dim=-1) 
-        
-        # Multiply each hidden state by its weight and sum them up
-        pooled_output = torch.bmm(attn_weights.unsqueeze(1), hidden_states).squeeze(1)
-        return pooled_output
+        attn_weights = F.softmax(scores, dim=-1)  # [batch, seq_len]
+        attn_output = torch.bmm(
+            attn_weights.unsqueeze(1), hidden_states
+        ).squeeze(1)  # [batch, hidden_size]
+
+        # Concatenate and apply dropout
+        pooled = torch.cat([cls_output, attn_output], dim=-1)  # [batch, hidden_size*2]
+        return self.dropout(pooled)
+
 
 class StandaloneChemBERTa(nn.Module):
-    """
-    A Transformer model for predicting multiple continuous targets from SMILES strings,
-    upgraded with Attention Pooling.
-    """
-    def __init__(self, model_name: str = "seyonec/ChemBERTa-zinc-base-v1", num_targets: int = 12):
-        super().__init__()
-        
-        # 1. THE BODY
-        try:
-            self.transformer = AutoModel.from_pretrained(model_name, local_files_only=True)
-        except OSError:
-            self.transformer = AutoModel.from_pretrained(model_name, local_files_only=False)
-        self.hidden_size = self.transformer.config.hidden_size # Typically 768
-        
-        # 2. THE NECK (NEW: Attention Pooling)
-        self.attention_pool = AttentionPooling(self.hidden_size)
-        
-        # 3. THE HEAD
-        self.prediction_head = nn.Linear(self.hidden_size, num_targets)
+    """ChemBERTa text encoder with Dual Pooling.
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    Exposes two size attributes for callers:
+
+    - ``hidden_size``: the raw transformer hidden dimension (e.g. 768).
+    - ``pooled_hidden_size``: the size of the vector produced by the pooling
+      layer (``hidden_size * 2``).  Use this when constructing the fusion
+      projector so the projector width is always correct.
+
+    Args:
+        model_name: Hugging Face model identifier.
+        num_targets: Number of regression targets for the prediction head.
+        pool_dropout: Dropout rate applied after the dual pooling operation.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "seyonec/ChemBERTa-zinc-base-v1",
+        num_targets: int = 12,
+        pool_dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        try:
+            self.transformer = AutoModel.from_pretrained(
+                model_name, local_files_only=True
+            )
+        except OSError:
+            self.transformer = AutoModel.from_pretrained(
+                model_name, local_files_only=False
+            )
+
+        self.hidden_size: int = self.transformer.config.hidden_size
+        # Output size of the pooling layer — used by fusion model.
+        self.pooled_hidden_size: int = self.hidden_size * 2
+
+        self.dual_pool = DualPooling(self.hidden_size, dropout=pool_dropout)
+        self.prediction_head = nn.Linear(self.pooled_hidden_size, num_targets)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward pass through ChemBERTa → Dual Pooling → prediction head.
+
+        Args:
+            input_ids: Token IDs, shape ``[batch, seq_len]``.
+            attention_mask: Attention mask, shape ``[batch, seq_len]``.
+
+        Returns:
+            Per-molecule predictions, shape ``[batch, num_targets]``.
         """
-        Forward pass through the Transformer, Attention Pooling, and prediction head.
-        """
-        # Pass tokens through the 6 Transformer layers
-        outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
-        
-        # outputs.last_hidden_state shape: [batch_size, seq_len, hidden_size]
-        sequence_hidden_states = outputs.last_hidden_state 
-        
-        # NEW: Apply Attention Pooling instead of just grabbing the [CLS] token
-        pooled_embedding = self.attention_pool(sequence_hidden_states, attention_mask)
-        
-        # Generate final predictions
-        predictions = self.prediction_head(pooled_embedding)
-        
-        return predictions
+        outputs = self.transformer(
+            input_ids=input_ids, attention_mask=attention_mask
+        )
+        pooled = self.dual_pool(outputs.last_hidden_state, attention_mask)
+        return self.prediction_head(pooled)

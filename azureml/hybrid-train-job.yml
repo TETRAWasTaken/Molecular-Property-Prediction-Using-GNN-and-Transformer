@@ -1,34 +1,69 @@
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 type: command
 display_name: molecular-hybrid-training
-description: Train the hybrid GIN + ChemBERTa model on Azure ML serverless compute.
+description: >
+  Train the hybrid GIN + ChemBERTa model on Azure ML serverless CPU compute.
+  Runs parallel GIN and ChemBERTa preprocessing, then trains the fusion model
+  with uncertainty-weighted multitask loss, cosine-annealing LR, and gradient
+  clipping.  Saves the best checkpoint (with split indices) and supports ONNX export.
 experiment_name: molecular-property-hybrid
+
+# ── Source code ──────────────────────────────────────────────────────────────
+# Uploads the project root (respects .amlignore to skip .venv, caches, etc.)
 code: ..
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 command: >-
   python main.py
+
+# ── Serverless CPU compute ────────────────────────────────────────────────────
+# No 'compute:' key = serverless (AML auto-provisions and deprovisions).
+# Standard_D16as_v4: 16 vCPU, 64 GB RAM — recommended minimum for CPU training
+# with the 118k-molecule QM9 dataset and ChemBERTa preprocessing.
+#
+# Other cost options (ascending price):
+#   Standard_D4as_v4  —  4 vCPU,  16 GB  (preprocessing only; too slow for training)
+#   Standard_D8as_v4  —  8 vCPU,  32 GB  (light training runs)
+#   Standard_D16as_v4 — 16 vCPU,  64 GB  (recommended)
+#   Standard_E16s_v3  — 16 vCPU, 128 GB  (memory-heavy graph batches)
 resources:
-  instance_type: Standard_NC
+  instance_type: Standard_D16as_v4
   instance_count: 1
+
+# ── Environment ───────────────────────────────────────────────────────────────
+# CPU Ubuntu image — no CUDA base needed.
 environment:
-  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
   conda_file: hybrid-conda.yml
+
+# ── Environment variables ─────────────────────────────────────────────────────
 environment_variables:
+  # Allow HuggingFace to download ChemBERTa on first run.
+  # Set to "1" after caching the weights in a datastore input (see README).
   HF_HUB_OFFLINE: "0"
+  # Wire dataset / output paths — main.py reads these via os.environ.get().
   MOLECULE_CSV_PATH: ${{inputs.mol_csv}}
   ATOM_CSV_PATH: ${{inputs.atom_csv}}
   TOKENIZED_CACHE_PATH: ${{outputs.cache_dir}}/tokenized_dataset.pt
   HYBRID_MODEL_OUTPUT_PATH: ${{outputs.model_dir}}/best_hybrid_model.pth
+
+# ── Inputs ────────────────────────────────────────────────────────────────────
+# Upload the QM9 CSVs to your workspace blob store first — see README Step 1.
 inputs:
   mol_csv:
     type: uri_file
-    path: ../Dataset/New_QM9/molecule_properties.csv
+    path: azureml://datastores/workspaceblobstore/paths/qm9/molecule_properties.csv
   atom_csv:
     type: uri_file
-    path: ../Dataset/New_QM9/atom_properties.csv
+    path: azureml://datastores/workspaceblobstore/paths/qm9/atom_properties.csv
+
+# ── Outputs (rw_mount: written live during run, uploaded on completion) ───────
 outputs:
   model_dir:
     type: uri_folder
-    path: azureml://datastores/workspaceblobstore/paths/molecular-hybrid-training/model/
+    path: azureml://datastores/workspaceblobstore/paths/molecular-hybrid/model/
+    mode: rw_mount
   cache_dir:
     type: uri_folder
-    path: azureml://datastores/workspaceblobstore/paths/molecular-hybrid-training/cache/
+    path: azureml://datastores/workspaceblobstore/paths/molecular-hybrid/cache/
+    mode: rw_mount

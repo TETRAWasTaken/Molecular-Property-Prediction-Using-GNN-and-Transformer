@@ -148,6 +148,14 @@ def apply_qm9_delta_learning(
     smiles_col: str = "smiles",
     target_cols: Iterable[str] | None = None,
 ) -> pd.DataFrame:
+    """Subtract per-atom reference energies from delta-learning target columns.
+
+    The QM9 CSV stores u0/u298/h298/g298 in Hartree.  The atomic reference
+    energies (``_QM9_ATOM_REFERENCE_VALUES``) are in eV.  This function first
+    converts those columns from Hartree to eV, then subtracts the reference
+    sum so the network only needs to learn the residual (delta) energy.
+    All other target columns are left unchanged.
+    """
     target_cols = list(target_cols or QM9_TARGET_COLUMNS)
     delta_cols = [col for col in target_cols if col in QM9_DELTA_TARGET_COLUMNS]
 
@@ -158,11 +166,17 @@ def apply_qm9_delta_learning(
         raise ValueError(f"Dataset must contain a '{smiles_col}' column for delta learning.")
 
     result = dataframe.copy()
-    reference_totals = result[smiles_col].apply(get_qm9_atom_reference_totals)
 
+    # Step 1: Convert Hartree → eV for the energy columns so units match the
+    # atomic reference values.
+    for col in delta_cols:
+        result[col] = pd.to_numeric(result[col], errors="coerce") * HARTREE_TO_EV
+
+    # Step 2: Subtract the per-molecule atomic reference sum (in eV).
+    reference_totals = result[smiles_col].apply(get_qm9_atom_reference_totals)
     for col in delta_cols:
         reference_sum = reference_totals.apply(lambda totals: float(totals.get(col, 0.0)))
-        result[col] = pd.to_numeric(result[col], errors="coerce") - reference_sum
+        result[col] = result[col] - reference_sum
 
     return result
 

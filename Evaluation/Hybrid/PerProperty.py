@@ -96,6 +96,8 @@ if __name__ == "__main__":
 
     TOKENIZED_CACHE_PATH = project_root / "Transformers_2/outputs/cache/tokenized_dataset.pt"
     MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
+    # Checkpoint path — used to load saved split indices (Bug 3 fix)
+    CHECKPOINT_PATH = project_root / "models" / "best_hybrid_model.pth"
     model_path, N_WORKERS, N_CONFORMERS = None, 1, 1  # -1 uses cpu_count() for parallel processing
 
     if not (TOKENIZED_CACHE_PATH.exists() and MOLECULE_CSV_PATH.exists()):
@@ -110,7 +112,6 @@ if __name__ == "__main__":
     t_mol_ids = [str(m).strip() for m in transformer_data['mol_ids']]
 
     # Ensure we strictly use mol_ids that exist in both the cache and the CSV
-    # This completely prevents KeyErrors and array misalignment
     valid_mol_ids = [m for m in t_mol_ids if m in smiles_map]
     if len(valid_mol_ids) != len(t_mol_ids):
         print(f"Warning: Found {len(t_mol_ids) - len(valid_mol_ids)} missing molecule IDs in CSV.")
@@ -118,16 +119,48 @@ if __name__ == "__main__":
     df_mol_aligned = df_mol.set_index('molecule_id').loc[valid_mol_ids]
     original_targets_aligned = df_mol_aligned[TARGET_COLS].to_numpy(dtype=np.float64)
 
+    # Bug 4 fix: Only convert properties that are stored in Hartree in the QM9 CSV.
+    # mu (Debye), alpha (Bohr^3), r2 (Bohr^2), and cv (cal/mol/K) are already in
+    # their native units.  homo, lumo, gap, zpve, u0, u298, h298, g298 are in Hartree.
+    HARTREE_COLS = {'homo', 'lumo', 'gap', 'zpve', 'u0', 'u298', 'h298', 'g298'}
     for i, col in enumerate(TARGET_COLS):
-        if col in ['u0', 'u298', 'h298', 'g298', 'zpve', 'gap', 'homo', 'lumo']:
+        if col in HARTREE_COLS:
             original_targets_aligned[:, i] *= HARTREE_TO_EV
 
     n_samples = len(valid_mol_ids)
-    train_size, val_size = int(0.8 * n_samples), int(0.1 * n_samples)
-    test_size = n_samples - train_size - val_size
-    generator = torch.Generator().manual_seed(42)
-    _, _, test_indices_subset = torch.utils.data.random_split(range(n_samples), [train_size, val_size, test_size], generator=generator)
-    test_indices = test_indices_subset.indices
+
+    # Bug 3 fix: try to load the exact test indices saved by main.py so the
+    # evaluation set matches training exactly.  Fall back to re-splitting only
+    # if the checkpoint does not contain split_info (e.g. an old checkpoint).
+    test_indices = None
+    if CHECKPOINT_PATH.exists():
+        try:
+            ckpt = torch.load(CHECKPOINT_PATH, map_location='cpu', weights_only=False)
+            if isinstance(ckpt, dict) and 'split_info' in ckpt:
+                split_info = ckpt['split_info']
+                if split_info.get('dataset_length') == n_samples:
+                    test_indices = split_info['test_indices']
+                    print(f"Loaded {len(test_indices)} test indices from checkpoint split_info.")
+                else:
+                    print(
+                        f"Warning: checkpoint dataset_length ({split_info.get('dataset_length')}) "
+                        f"!= current dataset length ({n_samples}). Falling back to re-split."
+                    )
+        except Exception as exc:
+            print(f"Warning: could not read split_info from checkpoint ({exc}). Falling back to re-split.")
+
+    if test_indices is None:
+        # Fallback: reproduce the same 80/10/10 split used by main.py
+        train_size = int(0.8 * n_samples)
+        val_size = int(0.1 * n_samples)
+        test_size = n_samples - train_size - val_size
+        generator = torch.Generator().manual_seed(42)
+        _, _, test_indices_subset = torch.utils.data.random_split(
+            range(n_samples), [train_size, val_size, test_size], generator=generator
+        )
+        test_indices = list(test_indices_subset.indices)
+        print(f"Reconstructed {len(test_indices)} test indices via fallback re-split.")
+
     test_smiles = [smiles_map[valid_mol_ids[i]] for i in test_indices]
     test_targets = original_targets_aligned[test_indices]
     print(f"Loaded test split with {len(test_smiles)} samples.")

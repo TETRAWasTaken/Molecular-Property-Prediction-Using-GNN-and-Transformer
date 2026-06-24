@@ -1,25 +1,26 @@
 $schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 type: command
-display_name: molecular-transformer-training
+display_name: molecular-gin-training
 description: >
-  Fine-tune the standalone ChemBERTa transformer on QM9 molecular properties
-  on Azure ML serverless CPU compute.
-experiment_name: molecular-property-transformer
+  Train the standalone GIN model on Azure ML serverless CPU compute.
+  Preprocesses the QM9 graph dataset, trains GIN with virtual nodes and
+  residual connections, and saves the checkpoint.
+experiment_name: molecular-property-gin
 
 # ── Source code ───────────────────────────────────────────────────────────────
 code: ..
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 command: >-
-  python Transformers_2/manual_run.py
+  python GIN_2/manual_run.py
   --mol_csv ${{inputs.mol_csv}}
-  --save_path ${{outputs.model_dir}}/transformer_model.pth
-  --cache_path ${{outputs.cache_dir}}/tokenized_dataset.pt
+  --atom_csv ${{inputs.atom_csv}}
+  --save_path ${{outputs.model_dir}}/GIN_model.pth
   --force_rebuild
 
 # ── Serverless CPU compute ────────────────────────────────────────────────────
 # No 'compute:' key = serverless (auto-provisioned, pay-per-minute).
-# Standard_D8as_v4 is sufficient for standalone ChemBERTa fine-tuning on CPU.
+# Standard_D8as_v4 is sufficient for standalone GIN training on CPU.
 resources:
   instance_type: Standard_D8as_v4
   instance_count: 1
@@ -27,7 +28,7 @@ resources:
 # ── Environment ───────────────────────────────────────────────────────────────
 environment:
   image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
-  conda_file: transformer-conda.yml
+  conda_file: gin-conda.yml
 
 # ── Environment variables ──────────────────────────────────────────────────────
 environment_variables:
@@ -38,14 +39,17 @@ inputs:
   mol_csv:
     type: uri_file
     path: azureml://datastores/workspaceblobstore/paths/qm9/molecule_properties.csv
+  atom_csv:
+    type: uri_file
+    path: azureml://datastores/workspaceblobstore/paths/qm9/atom_properties.csv
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
 outputs:
   model_dir:
     type: uri_folder
-    path: azureml://datastores/workspaceblobstore/paths/molecular-transformer/model/
+    path: azureml://datastores/workspaceblobstore/paths/molecular-gin/model/
     mode: rw_mount
   cache_dir:
     type: uri_folder
-    path: azureml://datastores/workspaceblobstore/paths/molecular-transformer/cache/
+    path: azureml://datastores/workspaceblobstore/paths/molecular-gin/cache/
     mode: rw_mount

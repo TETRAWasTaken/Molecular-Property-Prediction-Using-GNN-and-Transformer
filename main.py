@@ -66,9 +66,10 @@ class HybridFusionModel(nn.Module):
     """Fuse graph and text embeddings into a multitask molecular property head.
 
     The model encodes molecular graphs with a GIN backbone, encodes molecular
-    text with ChemBERTa, projects the text embedding into the graph embedding
-    space, applies learned gating to both modalities, constructs an explicit
-    bilinear interaction, and predicts all target properties with a shared MLP.
+    text with ChemBERTa using Dual Pooling, projects the text embedding into
+    the graph embedding space, applies learned gating to both modalities,
+    constructs an explicit bilinear interaction, and predicts all target
+    properties with a shared MLP.
 
     Args:
         gin_hidden_dim: Hidden dimension used by the graph encoder and fusion blocks.
@@ -78,24 +79,40 @@ class HybridFusionModel(nn.Module):
         dropout: Dropout probability applied inside the fusion MLP.
     """
 
-    def __init__(self, gin_hidden_dim=512, transformer_model="seyonec/ChemBERTa-zinc-base-v1", mlp_hidden_dim=1024, output_dim=12, dropout=0.1):
+    def __init__(
+        self,
+        gin_hidden_dim: int = 512,
+        transformer_model: str = "seyonec/ChemBERTa-zinc-base-v1",
+        mlp_hidden_dim: int = 1024,
+        output_dim: int = 12,
+        dropout: float = 0.1,
+    ) -> None:
         super().__init__()
-        
-        self.graph_encoder = GIN(hidden_dim=gin_hidden_dim, output_dim=output_dim)
-        self.text_encoder = StandaloneChemBERTa(model_name=transformer_model, num_targets=output_dim)
 
-        self.text_projector = nn.Sequential(
-            nn.Linear(self.text_encoder.hidden_size, gin_hidden_dim),
-            nn.BatchNorm1d(gin_hidden_dim),
-            nn.ReLU()
+        self.graph_encoder = GIN(hidden_dim=gin_hidden_dim, output_dim=output_dim)
+        self.text_encoder = StandaloneChemBERTa(
+            model_name=transformer_model, num_targets=output_dim
         )
 
-        self.graph_gate = nn.Sequential(nn.Linear(gin_hidden_dim, gin_hidden_dim), nn.Sigmoid())
-        self.text_gate = nn.Sequential(nn.Linear(gin_hidden_dim, gin_hidden_dim), nn.Sigmoid())
+        # Use pooled_hidden_size (= hidden_size * 2 with DualPooling) so this
+        # dimension is always correct regardless of pooling strategy.
+        self.text_projector = nn.Sequential(
+            nn.Linear(self.text_encoder.pooled_hidden_size, gin_hidden_dim),
+            nn.BatchNorm1d(gin_hidden_dim),
+            nn.ReLU(),
+        )
+
+        self.graph_gate = nn.Sequential(
+            nn.Linear(gin_hidden_dim, gin_hidden_dim), nn.Sigmoid()
+        )
+        self.text_gate = nn.Sequential(
+            nn.Linear(gin_hidden_dim, gin_hidden_dim), nn.Sigmoid()
+        )
 
         self.bilinear = nn.Bilinear(gin_hidden_dim, gin_hidden_dim, gin_hidden_dim)
 
-        self.graph_encoder.prediction_head[-1] = nn.Identity() 
+        # Strip prediction heads: we only want embeddings from sub-encoders.
+        self.graph_encoder.prediction_head[-1] = nn.Identity()
         self.text_encoder.prediction_head = nn.Identity()
 
         concat_dim = gin_hidden_dim * 3
@@ -105,28 +122,35 @@ class HybridFusionModel(nn.Module):
             nn.BatchNorm1d(mlp_hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            
             nn.Linear(mlp_hidden_dim, mlp_hidden_dim // 2),
             nn.BatchNorm1d(mlp_hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            
-            nn.Linear(mlp_hidden_dim // 2, output_dim)
+            nn.Linear(mlp_hidden_dim // 2, output_dim),
         )
 
-    def forward(self, graph_data, input_ids, attention_mask):
+    def forward(
+        self,
+        graph_data,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        num_graphs=None,
+    ) -> torch.Tensor:
         """Compute multitask predictions from graph and text inputs.
 
         Args:
             graph_data: Batched PyG graph data.
             input_ids: Token IDs for the text branch.
             attention_mask: Attention masks for the text branch.
+            num_graphs: Number of molecules in the batch.  Pass explicitly
+                when exporting to ONNX to avoid un-traceable ``batch.max()``
+                calls inside the GIN.
 
         Returns:
-            A tensor of multitask regression predictions.
+            Predicted properties, shape ``[batch, output_dim]``.
         """
-
-        graph_embedding = self.graph_encoder(graph_data)
+        # GIN accepts an optional num_graphs to stay ONNX-safe.
+        graph_embedding = self.graph_encoder(graph_data, num_graphs=num_graphs)
         raw_text_embedding = self.text_encoder(input_ids, attention_mask)
 
         text_embedding = self.text_projector(raw_text_embedding)
@@ -138,8 +162,9 @@ class HybridFusionModel(nn.Module):
         weighted_text = text_embedding * t_weight
 
         interaction = torch.relu(self.bilinear(weighted_graph, weighted_text))
-        fused_embedding = torch.cat([weighted_graph, weighted_text, interaction], dim=1)
-        
+        fused_embedding = torch.cat(
+            [weighted_graph, weighted_text, interaction], dim=1
+        )
         return self.fusion_mlp(fused_embedding)
 
 def run_gin_preprocessing():
@@ -181,32 +206,86 @@ def run_transformer_preprocessing():
     tokeniser.run_tokenizer(verbose=False)
     print("[Process 2] Transformer Preprocessing Complete.")
 
-def masked_mse_loss(predictions: torch.Tensor, targets: torch.Tensor, nan_mask: torch.Tensor, beta=1.0) -> torch.Tensor:
+def masked_mse_loss(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    nan_mask: torch.Tensor,
+    beta: float = 1.0,
+) -> torch.Tensor:
     """Compute a NaN-masked SmoothL1 regression loss over valid target entries.
 
-    The mask is expected to contain 1s for valid targets and 0s for missing
-    targets. The beta parameter controls the transition point for SmoothL1Loss.
+    Used for **validation monitoring**.  Training uses
+    :class:`UncertaintyWeightedLoss` which automatically balances property
+    scales with learnable precision weights.
 
     Args:
         predictions: Model outputs with shape matching targets.
         targets: Ground-truth multitask regression labels.
-        nan_mask: Binary mask indicating valid target entries.
-        beta: SmoothL1 transition point between L2 and L1 behavior.
+        nan_mask: Binary mask with 1s for valid targets and 0s for missing.
+        beta: SmoothL1 transition point between L2 and L1 behaviour.
 
     Returns:
-        The average masked SmoothL1 loss across valid entries.
+        Average masked SmoothL1 loss across valid entries.
     """
-
     loss_fn = nn.SmoothL1Loss(reduction='none', beta=beta)
-    
     raw_loss = loss_fn(predictions, targets)
     masked_loss = raw_loss * nan_mask
-    
     valid_entries = nan_mask.sum()
     if valid_entries > 0:
         return masked_loss.sum() / valid_entries
-    else:
-        return torch.tensor(0.0, device=predictions.device, requires_grad=True)
+    return torch.tensor(0.0, device=predictions.device, requires_grad=True)
+
+
+class UncertaintyWeightedLoss(nn.Module):
+    """Homoscedastic uncertainty-weighted multitask loss (Kendall et al. 2018).
+
+    Learns a per-task log-variance ``log_var_i`` and computes:
+
+    Loss formula per task i::
+
+        L_weighted_i = L_i / (2 * sigma_i^2) + log(sigma_i)
+                     = L_i * exp(-log_var_i) / 2 + log_var_i / 2
+
+    where sigma_i^2 = exp(log_var_i).  This automatically
+    down-weights high-uncertainty tasks and up-weights low-uncertainty ones,
+    removing the need to hand-tune per-property loss coefficients.
+
+    Args:
+        num_tasks: Number of regression targets (one log-var per task).
+    """
+
+    def __init__(self, num_tasks: int) -> None:
+        super().__init__()
+        # Initialise to 0 → initial weight for every task is 1.
+        self.log_var = nn.Parameter(torch.zeros(num_tasks))
+
+    def forward(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        nan_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute uncertainty-weighted multitask loss.
+
+        Args:
+            predictions: Model outputs, shape ``[batch, num_tasks]``.
+            targets: Ground-truth labels, shape ``[batch, num_tasks]``.
+            nan_mask: Valid-entry mask, shape ``[batch, num_tasks]``.
+
+        Returns:
+            Scalar weighted loss.
+        """
+        loss_fn = nn.SmoothL1Loss(reduction='none', beta=1.0)
+        raw_loss = loss_fn(predictions, targets)  # [batch, num_tasks]
+
+        # Per-task masked mean: avoid division by zero for missing properties.
+        valid_counts = nan_mask.sum(0).clamp(min=1.0)   # [num_tasks]
+        per_task_loss = (raw_loss * nan_mask).sum(0) / valid_counts  # [num_tasks]
+
+        # Uncertainty weighting:
+        #   L_weighted = per_task_loss * exp(-log_var) / 2 + log_var / 2
+        precision = torch.exp(-self.log_var)
+        return (per_task_loss * precision * 0.5 + self.log_var * 0.5).sum()
 
 if __name__ == '__main__':
     print("Initiating parallel preprocessing for Graph and Text pipelines...\n")
@@ -289,27 +368,51 @@ if __name__ == '__main__':
     )
 
     train_size = int(0.8 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    
+    val_size = int(0.1 * len(full_dataset))
+    test_size = len(full_dataset) - train_size - val_size
+
     generator = torch.Generator().manual_seed(42)
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size], generator=generator)
+    train_dataset, val_dataset, test_dataset = random_split(
+        full_dataset, [train_size, val_size, test_size], generator=generator
+    )
 
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
     
     model = HybridFusionModel().to(device)
-    
+
+    # Uncertainty-weighted training loss (learnable per-task precision).
+    train_loss_fn = UncertaintyWeightedLoss(len(TARGET_COLS)).to(device)
+
+    # Layer-wise LR decay for the transformer: only fine-tune at 1e-5 after
+    # unfreezing to avoid catastrophic forgetting.
+    transformer_body_params = list(
+        model.text_encoder.transformer.parameters()
+    )
+    non_transformer_text_params = [
+        p for n, p in model.text_encoder.named_parameters()
+        if 'transformer' not in n
+    ]
     optimizer = torch.optim.AdamW([
-        {'params': model.graph_encoder.parameters(), 'lr': 3e-4, 'weight_decay': 1e-3},
-        {'params': model.fusion_mlp.parameters(), 'lr': 3e-4, 'weight_decay': 1e-2},
-        {'params': model.text_encoder.parameters(), 'lr': 5e-5, 'weight_decay': 1e-5}
+        {'params': model.graph_encoder.parameters(),  'lr': 3e-4, 'weight_decay': 1e-3},
+        {'params': model.fusion_mlp.parameters(),     'lr': 3e-4, 'weight_decay': 1e-2},
+        {'params': model.text_projector.parameters(), 'lr': 3e-4, 'weight_decay': 1e-3},
+        {'params': model.graph_gate.parameters(),     'lr': 3e-4, 'weight_decay': 1e-3},
+        {'params': model.text_gate.parameters(),      'lr': 3e-4, 'weight_decay': 1e-3},
+        {'params': non_transformer_text_params,       'lr': 3e-4, 'weight_decay': 1e-5},
+        {'params': transformer_body_params,           'lr': 1e-5, 'weight_decay': 1e-5},
+        {'params': train_loss_fn.parameters(),        'lr': 1e-3, 'weight_decay': 0.0},
     ])
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3
+    # CosineAnnealingWarmRestarts gives better exploration for multitask
+    # settings than ReduceLROnPlateau; T_0=10, T_mult=2 provides progressively
+    # wider restart intervals (epochs 10, 30, 70, …).
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=10, T_mult=2, eta_min=1e-6
     )
     
-    epochs = 50
-    freeze_transformer_epochs = 5
+    epochs = 60
+    freeze_transformer_epochs = 10  # Longer freeze prevents catastrophic forgetting
     patience = 10
     early_stop_counter = 0
     best_val_loss = float('inf')
@@ -334,12 +437,16 @@ if __name__ == '__main__':
             b_nan_mask = batch['nan_mask'].to(device)
             
             optimizer.zero_grad()
-            
+
             predictions = model(graph_data, b_input_ids, b_attention_mask)
-            
-            loss = masked_mse_loss(predictions, b_targets, b_nan_mask)
-            
+
+            # Uncertainty-weighted loss for training (learnable precision weights)
+            loss = train_loss_fn(predictions, b_targets, b_nan_mask)
+
             loss.backward()
+            # Gradient clipping prevents explosions during early transformer fine-tuning.
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(train_loss_fn.parameters(), max_norm=1.0)
             optimizer.step()
             total_train_loss += loss.item()
             
@@ -369,7 +476,8 @@ if __name__ == '__main__':
                 all_masks.append(b_nan_mask.cpu())
                 
         avg_val_loss = total_val_loss / len(val_loader)
-        scheduler.step(avg_val_loss)
+        # CosineAnnealingWarmRestarts steps on epoch index, not loss value.
+        scheduler.step(epoch + avg_val_loss / len(val_loader))
         
         y_pred = torch.cat(all_preds, dim=0).numpy()
         y_true = torch.cat(all_targets, dim=0).numpy()
@@ -410,7 +518,22 @@ if __name__ == '__main__':
             output_dir = os.path.dirname(HYBRID_MODEL_OUTPUT_PATH)
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
-            torch.save(model.state_dict(), HYBRID_MODEL_OUTPUT_PATH)
+            # Save a checkpoint dict that includes split metadata so that
+            # evaluation scripts can reconstruct the exact same test split.
+            checkpoint = {
+                'state_dict': model.state_dict(),
+                'split_info': {
+                    'dataset_length': len(full_dataset),
+                    'train_size': train_size,
+                    'val_size': val_size,
+                    'test_size': test_size,
+                    'seed': 42,
+                    'train_indices': list(train_dataset.indices),
+                    'val_indices': list(val_dataset.indices),
+                    'test_indices': list(test_dataset.indices),
+                },
+            }
+            torch.save(checkpoint, HYBRID_MODEL_OUTPUT_PATH)
             early_stop_counter = 0
             print("  --> Saved new best model.")
         else:
@@ -419,5 +542,7 @@ if __name__ == '__main__':
             
         if early_stop_counter >= patience:
             print(f"\nEarly stopping triggered at epoch {epoch+1}. Restoring best weights.")
-            model.load_state_dict(torch.load(HYBRID_MODEL_OUTPUT_PATH))
+            ckpt = torch.load(HYBRID_MODEL_OUTPUT_PATH, map_location='cpu')
+            state = ckpt['state_dict'] if isinstance(ckpt, dict) and 'state_dict' in ckpt else ckpt
+            model.load_state_dict(state)
             break

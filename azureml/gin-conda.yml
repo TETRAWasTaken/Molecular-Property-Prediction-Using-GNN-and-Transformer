@@ -1,4 +1,4 @@
-name: hybrid-training
+name: gin-training
 channels:
   - conda-forge
   - defaults
@@ -12,10 +12,7 @@ dependencies:
   - rdkit              # conda-forge build; reliable on Linux
   - pip:
       # ── PyTorch CPU-only ───────────────────────────────────────────────────
-      # Serverless CPU compute has no GPU; use the +cpu index.
       - torch==2.3.1
-          --index-url https://download.pytorch.org/whl/cpu
-      - torchvision==0.18.1
           --index-url https://download.pytorch.org/whl/cpu
       # ── PyTorch Geometric — CPU wheels ────────────────────────────────────
       - torch-geometric==2.5.3
@@ -25,13 +22,9 @@ dependencies:
           --find-links https://data.pyg.org/whl/torch-2.3.0+cpu.html
       - torch-cluster==1.6.3
           --find-links https://data.pyg.org/whl/torch-2.3.0+cpu.html
-      # ── HuggingFace ───────────────────────────────────────────────────────
-      - transformers==4.41.2
-      - tokenizers>=0.19
       # ── Miscellaneous ─────────────────────────────────────────────────────
       - matplotlib
       - networkx
       - dask[dataframe]
-      - onnxruntime          # CPU-only ONNX runtime (no -gpu suffix)
       - art
       - azureml-mlflow       # experiment tracking in Azure ML Studio

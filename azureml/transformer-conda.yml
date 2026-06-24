@@ -1,18 +1,23 @@
 name: transformer-training
 channels:
   - conda-forge
-  - pytorch
   - defaults
 dependencies:
   - python=3.12
   - pip
-  - rdkit
+  - numpy<2.0
   - pandas
-  - numpy
   - scipy
   - scikit-learn
-  - dask
+  - rdkit
   - pip:
-      - torch
-      - transformers
+      # ── PyTorch CPU-only ───────────────────────────────────────────────────
+      - torch==2.3.1
+          --index-url https://download.pytorch.org/whl/cpu
+      # ── HuggingFace ───────────────────────────────────────────────────────
+      - transformers==4.41.2
+      - tokenizers>=0.19
+      # ── Miscellaneous ─────────────────────────────────────────────────────
+      - dask[dataframe]
       - art
+      - azureml-mlflow

@@ -258,43 +258,59 @@ def _descale_prediction_values(values, smiles: str | List[str]):
     arr = np.asarray(values, dtype=np.float32).copy()
     stats = _load_property_stats()
     if not stats: return arr
-    
+
     is_batch = isinstance(smiles, list)
-    
-    # Step 1: Inverse scale all values using standardization stats
+
+    # Step 1: Inverse-standardise all values using the stats that were computed
+    # AFTER delta-learning was applied (i.e. the mean/std describe delta energies,
+    # not total energies).  The formula is: physical_delta = z * std + mean.
     for idx, prop in enumerate(_PROPERTY_NAMES):
         entry = stats.get(prop)
         if not isinstance(entry, dict): continue
-        
+
         if arr.ndim == 1:
             arr[idx] = (arr[idx] * float(entry['std'])) + float(entry['mean'])
         elif arr.ndim == 2:
             arr[:, idx] = (arr[:, idx] * float(entry['std'])) + float(entry['mean'])
 
-    # Step 2: For delta-trained properties, add the atomic reference energy back.
+    # Step 2: For delta-trained properties (u0, u298, h298, g298), recover the
+    # total molecular energy by ADDING the atomic reference sums back.
+    # The reference values in the JSON are already negative (free-atom energies
+    # are negative in eV), so we add them directly — no abs(), no sign flip.
     atom_ref_payload = stats.get('_atom_reference_energies')
-    if not (smiles and isinstance(atom_ref_payload, dict)): return arr
+    if not (smiles and isinstance(atom_ref_payload, dict)):
+        return arr
+
+    # atom_ref_payload has structure:
+    #   { "by_property": { "u0": { "H": -13.61, "C": -1029.86, ... }, ... } }
+    by_property = atom_ref_payload.get('by_property', atom_ref_payload)
 
     smiles_list = smiles if is_batch else [smiles]
     for i, s in enumerate(smiles_list):
         mol = Chem.MolFromSmiles(s)
-        if not mol: continue
+        if not mol:
+            continue
         mol = Chem.AddHs(mol)
-        
-        for idx, prop in enumerate(_PROPERTY_NAMES):
-            if prop in QM9_DELTA_TARGET_COLUMNS:
-                correction = 0.0
-                prop_refs = atom_ref_payload.get(prop, {})
-                for atom in mol.GetAtoms():
-                            val = prop_refs.get(atom.GetSymbol(), 0.0)
-                            # Enforce negative sign: free atom energies are physically negative
-                            correction -= abs(val)
 
-                        # Recover Total Energy by adding the negative reference sum
-                if arr.ndim == 1:
-                    arr[idx] += correction
-                else:
-                    arr[i, idx] += correction
+        for idx, prop in enumerate(_PROPERTY_NAMES):
+            if prop not in QM9_DELTA_TARGET_COLUMNS:
+                continue
+            prop_refs = by_property.get(prop, {})
+            if not isinstance(prop_refs, dict):
+                continue
+
+            # Sum up the (negative) reference energies for each atom and ADD them
+            # back: total_energy = delta_energy + sum(atomic_references)
+            correction = sum(
+                float(prop_refs.get(atom.GetSymbol(), 0.0))
+                for atom in mol.GetAtoms()
+            )
+
+            if arr.ndim == 1:
+                arr[idx] += correction
+            else:
+                arr[i, idx] += correction
+
     return arr
 
 def _descale_spread_values(values):
@@ -402,13 +418,17 @@ def _get_tokenizer():
 
 def _encode_smiles(smiles):
     tokenizer = _get_tokenizer()
+    # Bug 5 fix: the fallback ASCII tokenizer produces completely different token
+    # IDs from those ChemBERTa was trained on and silently corrupts the transformer
+    # branch.  Raise an explicit error so misconfiguration surfaces immediately.
     if tokenizer == 'fallback' or not hasattr(tokenizer, 'batch_encode_plus'):
-        tokens = [101] + [(ord(ch) % 255) + 1 for ch in (smiles or '')[:max(0, _MAX_SEQ_LEN - 2)]] + [102]
-        pad_len = _MAX_SEQ_LEN - len(tokens)
-        input_ids = [tokens + [0] * pad_len]
-        attention_mask = [[1] * len(tokens) + [0] * pad_len]
-        return np.ascontiguousarray(input_ids, dtype=np.int64), np.ascontiguousarray(attention_mask, dtype=np.int64)
-    
+        raise RuntimeError(
+            "ChemBERTa tokenizer is not available. "
+            "Ensure 'GUI/assets/transformer/' contains a valid Hugging Face model directory "
+            "(config.json + tokenizer.json + model weights), or set the "
+            "HYBRID_ATTENTION_MODEL_PATH environment variable to the correct path."
+        )
+
     encoded = tokenizer(smiles, padding='max_length', truncation=True, max_length=_MAX_SEQ_LEN, return_tensors='np')
     return np.ascontiguousarray(encoded['input_ids'].astype(np.int64)), np.ascontiguousarray(encoded['attention_mask'].astype(np.int64))
 
