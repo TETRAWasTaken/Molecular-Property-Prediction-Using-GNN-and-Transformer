@@ -6,13 +6,18 @@ identifier, trains a fusion model, and reports validation losses and per-propert
 metrics with early stopping.
 """
 
+import multiprocessing
 import os
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-import multiprocessing
-
 import torch
+
+# Force PyTorch to use all available CPU cores for operations
+num_cpus = multiprocessing.cpu_count()
+torch.set_num_threads(num_cpus)
+print(f"Configured PyTorch to use {num_cpus} threads for intra-op parallelism.", flush=True)
+
 import torch.nn as nn
 from sklearn.metrics import mean_absolute_error, r2_score
 from torch.utils.data import Dataset, random_split
@@ -288,16 +293,38 @@ class UncertaintyWeightedLoss(nn.Module):
         return (per_task_loss * precision * 0.5 + self.log_var * 0.5).sum()
 
 if __name__ == '__main__':
-    print("Initiating parallel preprocessing for Graph and Text pipelines...\n")
-    p1 = multiprocessing.Process(target=run_gin_preprocessing)
-    p2 = multiprocessing.Process(target=run_transformer_preprocessing)
+    # Check for existing preprocessing caches to determine if we can bypass them
+    gin_cache_file = os.path.join('GIN_2/data/processed', 'qm_merged_3d_graphs_delta.pt')
+    run_gin = not os.path.exists(gin_cache_file)
+    run_transformer = not os.path.exists(TOKENIZED_CACHE_PATH)
 
-    p1.start()
-    p2.start()
+    # Force rebuild if the environment variable is set to 1
+    if os.environ.get("FORCE_REBUILD", "0") == "1":
+        run_gin = True
+        run_transformer = True
 
-    p1.join()
-    p2.join()
-    print("\nAll preprocessing finished. Proceeding to Data Loading...\n")
+    processes = []
+    if run_gin:
+        p1 = multiprocessing.Process(target=run_gin_preprocessing)
+        processes.append(p1)
+    else:
+        print("GIN preprocessing cache found. Skipping GIN preprocessing.")
+
+    if run_transformer:
+        p2 = multiprocessing.Process(target=run_transformer_preprocessing)
+        processes.append(p2)
+    else:
+        print("Transformer preprocessing cache found. Skipping Transformer preprocessing.")
+
+    if processes:
+        print("Initiating preprocessing for required pipelines...\n")
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join()
+        print("\nAll preprocessing finished. Proceeding to Data Loading...\n")
+    else:
+        print("\nAll preprocessing caches found. Proceeding directly to Data Loading...\n")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
@@ -376,9 +403,11 @@ if __name__ == '__main__':
         full_dataset, [train_size, val_size, test_size], generator=generator
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    num_workers = min(multiprocessing.cpu_count(), 8)
+    print(f"Using {num_workers} workers for DataLoaders.", flush=True)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=num_workers)
     
     model = HybridFusionModel().to(device)
 
@@ -429,7 +458,9 @@ if __name__ == '__main__':
             for param in model.text_encoder.transformer.parameters():
                 param.requires_grad = True
 
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader):
+            if batch_idx % 100 == 0:
+                print(f"Epoch {epoch+1:02d}/{epochs} | Train Batch {batch_idx}/{len(train_loader)}", flush=True)
             graph_data = batch['graph'].to(device)
             b_input_ids = batch['input_ids'].to(device)
             b_attention_mask = batch['attention_mask'].to(device)
@@ -460,7 +491,9 @@ if __name__ == '__main__':
         all_masks = []
         
         with torch.no_grad():
-            for batch in val_loader:
+            for batch_idx, batch in enumerate(val_loader):
+                if batch_idx % 100 == 0:
+                    print(f"Epoch {epoch+1:02d}/{epochs} | Val Batch {batch_idx}/{len(val_loader)}", flush=True)
                 graph_data = batch['graph'].to(device)
                 b_input_ids = batch['input_ids'].to(device)
                 b_attention_mask = batch['attention_mask'].to(device)

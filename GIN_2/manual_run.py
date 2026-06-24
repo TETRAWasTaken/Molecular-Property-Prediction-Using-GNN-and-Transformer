@@ -22,17 +22,37 @@ def get_dataset_stats(csv_path: str, target_cols: list) -> tuple:
     Calculates the global mean and standard deviation for dynamic normalization.
     """
     print(f"Calculating global statistics for {len(target_cols)} targets...")
-    df = pd.read_csv(csv_path)
-    df = apply_qm9_delta_learning(df, smiles_col='smiles', target_cols=target_cols)
-    df = df[target_cols]
-    mean_vals = df[target_cols].mean().values
-    std_vals = df[target_cols].std().values
-    
-    target_mean = torch.tensor(mean_vals, dtype=torch.float32)
-    target_std = torch.tensor(std_vals, dtype=torch.float32)
-    print("Global statistics calculated successfully.")
-    
-    return target_mean, target_std
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path)
+        df = apply_qm9_delta_learning(df, smiles_col='smiles', target_cols=target_cols)
+        df = df[target_cols]
+        mean_vals = df[target_cols].mean().values
+        std_vals = df[target_cols].std().values
+        
+        target_mean = torch.tensor(mean_vals, dtype=torch.float32)
+        target_std = torch.tensor(std_vals, dtype=torch.float32)
+        print("Global statistics calculated successfully from raw CSV.")
+        return target_mean, target_std
+    else:
+        # Fallback to computing from processed cache if CSV path doesn't exist
+        cache_file = 'GIN_2/data/processed/qm_merged_3d_graphs_delta.pt'
+        if os.path.exists(cache_file):
+            print(f"CSV file not found at {csv_path}. Extracting stats from preprocessed cache {cache_file}...")
+            payload = torch.load(cache_file, map_location='cpu', weights_only=False)
+            if isinstance(payload, tuple) and len(payload) >= 1:
+                data = payload[0]
+            else:
+                data = payload
+            if hasattr(data, 'y') and data.y is not None:
+                import numpy as np
+                y_np = data.y.numpy()
+                mean_vals = np.nanmean(y_np, axis=0)
+                std_vals = np.nanstd(y_np, axis=0)
+                target_mean = torch.tensor(mean_vals, dtype=torch.float32)
+                target_std = torch.tensor(std_vals, dtype=torch.float32)
+                print("Global statistics extracted from cache successfully.")
+                return target_mean, target_std
+        raise FileNotFoundError(f"Could not calculate statistics: raw CSV {csv_path} and cache {cache_file} are both missing.")
 
 
 class main:
@@ -96,7 +116,7 @@ class main:
         self.target_mean, self.target_std = get_dataset_stats(self.mol_path, self.TARGET_COLS)
 
         # 2. Handle force rebuild (Manually delete the PyG cache file)
-        cache_file = './data/processed/qm_merged_3d_graphs_delta.pt'
+        cache_file = 'GIN_2/data/processed/qm_merged_3d_graphs_delta.pt'
         if self.force_rebuild and os.path.exists(cache_file):
             print("Force rebuild triggered. Deleting old cache...")
             os.remove(cache_file)
@@ -104,7 +124,7 @@ class main:
         # 3. Initialize PyG Pipeline (This automatically handles Dask processing or loading from disk)
         print("Initializing Relational Geometry Pipeline...")
         pipeline = RelationalGeometryPipeline(
-            root='./data', 
+            root='GIN_2/data', 
             mol_csv_path=self.mol_path, 
             atom_csv_path=self.atom_path, 
             target_cols=self.TARGET_COLS

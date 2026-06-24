@@ -25,6 +25,7 @@ from GUI.core.inference import (
 from Scripts.qm9_delta import (
     HARTREE_TO_EV,
     QM9_DELTA_TARGET_COLUMNS,
+    apply_qm9_delta_learning,
 )
 
 EV_TO_KCAL_MOL = 23.060548
@@ -117,12 +118,19 @@ if __name__ == "__main__":
         print(f"Warning: Found {len(t_mol_ids) - len(valid_mol_ids)} missing molecule IDs in CSV.")
 
     df_mol_aligned = df_mol.set_index('molecule_id').loc[valid_mol_ids]
+    
+    # Fix for old model: Apply QM9 delta learning. This converts delta cols to eV
+    # and subtracts the atomic reference energies (which the old model learned).
+    df_mol_aligned = df_mol_aligned.reset_index()
+    df_mol_aligned = apply_qm9_delta_learning(df_mol_aligned, smiles_col='smiles', target_cols=TARGET_COLS)
+    df_mol_aligned = df_mol_aligned.set_index('molecule_id')
+
     original_targets_aligned = df_mol_aligned[TARGET_COLS].to_numpy(dtype=np.float64)
 
-    # Bug 4 fix: Only convert properties that are stored in Hartree in the QM9 CSV.
-    # mu (Debye), alpha (Bohr^3), r2 (Bohr^2), and cv (cal/mol/K) are already in
-    # their native units.  homo, lumo, gap, zpve, u0, u298, h298, g298 are in Hartree.
-    HARTREE_COLS = {'homo', 'lumo', 'gap', 'zpve', 'u0', 'u298', 'h298', 'g298'}
+    # Convert the remaining properties that are in Hartree but not delta targets.
+    # mu, alpha, r2, cv are in native units.
+    # homo, lumo, gap, zpve are in Hartree.
+    HARTREE_COLS = {'homo', 'lumo', 'gap', 'zpve'}
     for i, col in enumerate(TARGET_COLS):
         if col in HARTREE_COLS:
             original_targets_aligned[:, i] *= HARTREE_TO_EV

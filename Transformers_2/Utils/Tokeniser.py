@@ -73,7 +73,7 @@ class Tokeniser:
         self.model_name = model_name
         try:
             self.tokeniser = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
-        except OSError:
+        except Exception:
             self.tokeniser = AutoTokenizer.from_pretrained(model_name, local_files_only=False)
         self.max_length = max_length
         self.batch_size = batch_size
@@ -98,9 +98,13 @@ class Tokeniser:
 
     def _source_signature(self) -> dict:
         mol_abs = os.path.abspath(self.mol_path)
+        try:
+            mol_mtime = os.path.getmtime(mol_abs)
+        except Exception:
+            mol_mtime = 0.0
         return {
             "mol_path": mol_abs,
-            "mol_mtime": os.path.getmtime(mol_abs),
+            "mol_mtime": mol_mtime,
             "model_name": self.model_name,
             "max_length": self.max_length,
             "target_cols": self.target_cols,
@@ -127,9 +131,56 @@ class Tokeniser:
             except TypeError:
                 payload = torch.load(cache_path, map_location="cpu")
 
-            if payload.get("signature") != self._source_signature():
+            cached_sig = payload.get("signature")
+            if not cached_sig:
                 if self.verbose:
-                    print(f"Cache found at {cache_path}, but inputs changed. Rebuilding preprocessing...")
+                    print(f"Cache found at {cache_path}, but it has no signature. Rebuilding preprocessing...")
+                return False
+
+            # Check if raw files exist. If not, we must load from cache because we cannot rebuild.
+            if not os.path.exists(self.mol_path):
+                if self.verbose:
+                    print(f"Raw dataset file not found at {self.mol_path}. Using cache directly without validating signature.")
+                self.scalers = payload.get("scalers", {})
+                self._build_dataloaders_from_payload(payload)
+                return True
+
+            # If raw file exists, compare signatures (relaxed for environment/path changes)
+            current_abs = os.path.abspath(self.mol_path)
+            cached_abs = cached_sig.get("mol_path")
+
+            params_match = (
+                cached_sig.get("model_name") == self.model_name and
+                cached_sig.get("max_length") == self.max_length and
+                cached_sig.get("target_cols") == self.target_cols and
+                cached_sig.get("batch_size") == self.batch_size and
+                cached_sig.get("seed") == self.seed and
+                cached_sig.get("cache_version") == self.cache_version
+            )
+
+            if not params_match:
+                if self.verbose:
+                    print(f"Cache parameters mismatch. Rebuilding preprocessing...")
+                return False
+
+            # Check if file matches (mtime or filename)
+            files_match = False
+            if current_abs == cached_abs:
+                # Same machine/path: verify modification time
+                try:
+                    current_mtime = os.path.getmtime(current_abs)
+                    if abs(current_mtime - cached_sig.get("mol_mtime", 0)) < 1e-3:
+                        files_match = True
+                except Exception:
+                    pass
+            else:
+                # Different paths (e.g. local vs Azure ML): check basename
+                if cached_abs and os.path.basename(current_abs) == os.path.basename(cached_abs):
+                    files_match = True
+
+            if not files_match:
+                if self.verbose:
+                    print(f"Cache file signature mismatch (mtime or filename). Rebuilding preprocessing...")
                 return False
 
             if self.verbose:
@@ -233,7 +284,7 @@ class Tokeniser:
             
         with ProgressBar():
             # We compute() here to finalize the Dask graph into a Pandas DataFrame
-            self.df = self.ddf.map_partitions(apply_canon, meta=meta_df).compute(scheduler='processes')
+            self.df = self.ddf.map_partitions(apply_canon, meta=self.ddf._meta).compute(scheduler='processes')
 
         # Drop invalid SMILES strings
         self.df = self.df[self.df['smiles'].notna()]

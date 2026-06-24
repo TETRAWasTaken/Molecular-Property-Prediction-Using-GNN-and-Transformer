@@ -99,7 +99,7 @@ class StandaloneChemBERTa(nn.Module):
             self.transformer = AutoModel.from_pretrained(
                 model_name, local_files_only=True
             )
-        except OSError:
+        except Exception:
             self.transformer = AutoModel.from_pretrained(
                 model_name, local_files_only=False
             )

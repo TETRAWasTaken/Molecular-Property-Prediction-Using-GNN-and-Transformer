@@ -14,6 +14,7 @@ code: ..
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 command: >-
+  HYBRID_MODEL_OUTPUT_PATH=${{outputs.model_dir}}/best_hybrid_model.pth
   python main.py
 
 # ── Serverless CPU compute ────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ command: >-
 #   Standard_D16as_v4 — 16 vCPU,  64 GB  (recommended)
 #   Standard_E16s_v3  — 16 vCPU, 128 GB  (memory-heavy graph batches)
 resources:
-  instance_type: Standard_D16as_v4
+  instance_type: Standard_D4as_v4
   instance_count: 1
 
 # ── Environment ───────────────────────────────────────────────────────────────
@@ -41,21 +42,8 @@ environment_variables:
   # Allow HuggingFace to download ChemBERTa on first run.
   # Set to "1" after caching the weights in a datastore input (see README).
   HF_HUB_OFFLINE: "0"
-  # Wire dataset / output paths — main.py reads these via os.environ.get().
-  MOLECULE_CSV_PATH: ${{inputs.mol_csv}}
-  ATOM_CSV_PATH: ${{inputs.atom_csv}}
-  TOKENIZED_CACHE_PATH: ${{outputs.cache_dir}}/tokenized_dataset.pt
-  HYBRID_MODEL_OUTPUT_PATH: ${{outputs.model_dir}}/best_hybrid_model.pth
+  PYTHONUNBUFFERED: "1"
 
-# ── Inputs ────────────────────────────────────────────────────────────────────
-# Upload the QM9 CSVs to your workspace blob store first — see README Step 1.
-inputs:
-  mol_csv:
-    type: uri_file
-    path: azureml://datastores/workspaceblobstore/paths/qm9/molecule_properties.csv
-  atom_csv:
-    type: uri_file
-    path: azureml://datastores/workspaceblobstore/paths/qm9/atom_properties.csv
 
 # ── Outputs (rw_mount: written live during run, uploaded on completion) ───────
 outputs:

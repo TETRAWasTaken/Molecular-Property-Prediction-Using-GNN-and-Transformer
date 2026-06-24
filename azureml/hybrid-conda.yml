@@ -11,20 +11,17 @@ dependencies:
   - scikit-learn
   - rdkit              # conda-forge build; reliable on Linux
   - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - --find-links https://data.pyg.org/whl/torch-2.3.0+cpu.html
       # ── PyTorch CPU-only ───────────────────────────────────────────────────
       # Serverless CPU compute has no GPU; use the +cpu index.
-      - torch==2.3.1
-          --index-url https://download.pytorch.org/whl/cpu
-      - torchvision==0.18.1
-          --index-url https://download.pytorch.org/whl/cpu
+      - torch==2.3.1+cpu
+      - torchvision==0.18.1+cpu
       # ── PyTorch Geometric — CPU wheels ────────────────────────────────────
       - torch-geometric==2.5.3
       - torch-scatter==2.1.2
-          --find-links https://data.pyg.org/whl/torch-2.3.0+cpu.html
       - torch-sparse==0.6.18
-          --find-links https://data.pyg.org/whl/torch-2.3.0+cpu.html
       - torch-cluster==1.6.3
-          --find-links https://data.pyg.org/whl/torch-2.3.0+cpu.html
       # ── HuggingFace ───────────────────────────────────────────────────────
       - transformers==4.41.2
       - tokenizers>=0.19
