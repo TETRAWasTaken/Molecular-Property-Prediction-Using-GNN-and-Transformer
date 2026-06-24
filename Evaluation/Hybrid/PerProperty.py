@@ -30,17 +30,194 @@ from Scripts.qm9_delta import (
 
 EV_TO_KCAL_MOL = 23.060548
 
-def init_worker(model_path_for_worker: str):
-    init_hybrid_engine(model_path=model_path_for_worker)
+import torch.nn as nn
+import torch.nn.functional as F
 
-def run_inference_for_smiles(smiles: str, n_conformers: int) -> tuple:
-    try:
-        result = run_hybrid_regression_with_confidence(
-            smiles, model_path=None, n_conformers=n_conformers, apply_descaling=True
+class AttentionPooling(nn.Module):
+    def __init__(self, hidden_size: int, dropout: float = 0.1) -> None:
+        super().__init__()
+        self.attention_scorer = nn.Linear(hidden_size, 1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        scores = self.attention_scorer(hidden_states).squeeze(-1)
+        scores = scores.masked_fill(attention_mask == 0, -1e9)
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_output = torch.bmm(attn_weights.unsqueeze(1), hidden_states).squeeze(1)
+        return self.dropout(attn_output)
+
+class CompatibleStandaloneChemBERTa(nn.Module):
+    def __init__(
+        self,
+        model_name: str = "seyonec/ChemBERTa-zinc-base-v1",
+        num_targets: int = 12,
+        pool_dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        from transformers import AutoModel
+        try:
+            self.transformer = AutoModel.from_pretrained(model_name, local_files_only=True)
+        except Exception:
+            self.transformer = AutoModel.from_pretrained(model_name, local_files_only=False)
+
+        self.hidden_size: int = self.transformer.config.hidden_size
+        self.pooled_hidden_size: int = self.hidden_size
+
+        self.attention_pool = AttentionPooling(self.hidden_size, dropout=pool_dropout)
+        self.prediction_head = nn.Linear(self.pooled_hidden_size, num_targets)
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = self.attention_pool(outputs.last_hidden_state, attention_mask)
+        return self.prediction_head(pooled)
+
+from GIN_2.Utils.GIN import _global_add_pool_safe, GIN
+
+class CompatibleGIN(GIN):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if hasattr(self, 'jk_layer_weights'):
+            delattr(self, 'jk_layer_weights')
+            self.register_parameter('jk_layer_weights', None)
+
+    def forward(self, data, num_graphs=None):
+        x, edge_index, edge_attr, batch = (
+            data.x,
+            data.edge_index,
+            data.edge_attr,
+            data.batch,
         )
-        return smiles, result['prediction'], None
-    except Exception as exc:
-        return smiles, None, str(exc)
+
+        if num_graphs is None:
+            num_graphs = int(batch.max()) + 1
+
+        h_list = [self.node_encoder(x)]
+        edge_embeddings = self.edge_encoder(edge_attr)
+
+        virtual_node_feat = self.virtual_node_embedding.weight.expand(num_graphs, -1)
+
+        for layer in range(self.num_layer):
+            h_prev = h_list[layer]
+            h = h_prev + virtual_node_feat[batch]
+            h = self.convs[layer](h, edge_index, edge_embeddings)
+            h = self.batch_norms[layer](h)
+            h = F.relu(h)
+            h = F.dropout(h, p=self.dropout_rate, training=self.training)
+            h = h + h_prev
+            h_list.append(h)
+
+            if layer < self.num_layer - 1:
+                vn_agg = _global_add_pool_safe(h_list[-1], batch, num_graphs)
+                vn_update = self.vn_mlp[layer](virtual_node_feat + vn_agg)
+                virtual_node_feat = virtual_node_feat + vn_update
+
+        pooled_list = [
+            _global_add_pool_safe(h, batch, num_graphs) for h in h_list
+        ]
+        h_graph = torch.cat(pooled_list, dim=1)
+
+        return self.prediction_head(h_graph)
+
+class CompatibleHybridFusionModel(nn.Module):
+    def __init__(
+        self,
+        gin_hidden_dim: int = 512,
+        transformer_model: str = "seyonec/ChemBERTa-zinc-base-v1",
+        mlp_hidden_dim: int = 1024,
+        output_dim: int = 12,
+        dropout: float = 0.1,
+        num_gin_layers: int = 5,
+    ) -> None:
+        super().__init__()
+        self.graph_encoder = CompatibleGIN(hidden_dim=gin_hidden_dim, output_dim=output_dim, num_layer=num_gin_layers)
+        self.text_encoder = CompatibleStandaloneChemBERTa(
+            model_name=transformer_model, num_targets=output_dim
+        )
+
+        self.text_projector = nn.Sequential(
+            nn.Linear(self.text_encoder.pooled_hidden_size, gin_hidden_dim),
+            nn.BatchNorm1d(gin_hidden_dim),
+            nn.ReLU(),
+        )
+
+        self.graph_gate = nn.Sequential(
+            nn.Linear(gin_hidden_dim, gin_hidden_dim), nn.Sigmoid()
+        )
+        self.text_gate = nn.Sequential(
+            nn.Linear(gin_hidden_dim, gin_hidden_dim), nn.Sigmoid()
+        )
+
+        self.bilinear = nn.Bilinear(gin_hidden_dim, gin_hidden_dim, gin_hidden_dim)
+
+        self.graph_encoder.prediction_head[-1] = nn.Identity()
+        self.text_encoder.prediction_head = nn.Identity()
+
+        concat_dim = gin_hidden_dim * 3
+
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(concat_dim, mlp_hidden_dim),
+            nn.BatchNorm1d(mlp_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_hidden_dim, mlp_hidden_dim // 2),
+            nn.BatchNorm1d(mlp_hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_hidden_dim // 2, output_dim),
+        )
+
+    def forward(
+        self,
+        graph_data,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        num_graphs=None,
+    ) -> torch.Tensor:
+        graph_embedding = self.graph_encoder(graph_data, num_graphs=num_graphs)
+        raw_text_embedding = self.text_encoder(input_ids, attention_mask)
+
+        text_embedding = self.text_projector(raw_text_embedding)
+
+        g_weight = self.graph_gate(graph_embedding)
+        t_weight = self.text_gate(text_embedding)
+
+        weighted_graph = graph_embedding * g_weight
+        weighted_text = text_embedding * t_weight
+
+        interaction = torch.relu(self.bilinear(weighted_graph, weighted_text))
+        fused_embedding = torch.cat(
+            [weighted_graph, weighted_text, interaction], dim=1
+        )
+        return self.fusion_mlp(fused_embedding)
+
+def load_model_from_checkpoint(model_path, device, target_cols):
+    ckpt = torch.load(model_path, map_location=device, weights_only=False)
+    state = ckpt['state_dict'] if isinstance(ckpt, dict) and 'state_dict' in ckpt else ckpt
+    
+    # Infer GIN layers and pooling strategy from checkpoint keys
+    num_layers = 0
+    has_dual_pool = True
+    for key in state.keys():
+        if key.startswith("graph_encoder.convs."):
+            try:
+                layer_idx = int(key.split(".")[2])
+                num_layers = max(num_layers, layer_idx + 1)
+            except ValueError:
+                pass
+        if "attention_pool" in key:
+            has_dual_pool = False
+            
+    print(f"Detected checkpoint architecture: GIN layers = {num_layers}, DualPool = {has_dual_pool}")
+    
+    if has_dual_pool and num_layers == 6:
+        from main import HybridFusionModel
+        model = HybridFusionModel(output_dim=len(target_cols)).to(device)
+    else:
+        model = CompatibleHybridFusionModel(output_dim=len(target_cols), num_gin_layers=num_layers).to(device)
+        
+    model.load_state_dict(state)
+    model.eval()
+    return model
 
 def evaluate_all_properties_with_inference(
     smiles_list: List[str],
@@ -50,28 +227,193 @@ def evaluate_all_properties_with_inference(
     n_conformers: int = 3,
     n_workers: int = -1,
 ) -> Tuple[Dict[str, Dict[str, float]], np.ndarray, np.ndarray, List[str]]:
-    if n_workers < 1:
-        n_workers = cpu_count()
-    print(f"Using {n_workers} worker processes for inference.")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    print(f"Using PyTorch on device: {device} for inference.")
+    
+    if not model_path:
+        model_path = str(project_root / "models" / "best_hybrid_model.pth")
+    
+    print(f"Loading model checkpoint from {model_path}...")
+    model = load_model_from_checkpoint(model_path, device, target_cols)
 
-    all_preds, failures = [], []
-    processed_smiles = []
-    with mp.Pool(processes=n_workers, initializer=init_worker, initargs=(model_path,)) as pool:
-        task = partial(run_inference_for_smiles, n_conformers=n_conformers)
-        results_iterator = pool.imap(task, smiles_list)
-        for result in tqdm(results_iterator, total=len(smiles_list), desc="Running parallel inference"):
-            smiles, prediction, error = result
-            processed_smiles.append(smiles)
-            if error:
-                failures.append((smiles, error))
-                all_preds.append(np.full(len(target_cols), np.nan))
+    # Load caches for fast SMILES lookup
+    cache_lookup = {}
+    scalers = None
+    
+    TOKENIZED_CACHE_PATH = project_root / "Transformers_2/outputs/cache/tokenized_dataset.pt"
+    MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
+    ATOM_CSV_PATH = project_root / "Dataset/New_QM9/atom_properties.csv"
+    
+    print("Loading preprocessed cache to speed up evaluation...")
+    try:
+        from GIN_2.Utils.preprocessing import RelationalGeometryPipeline
+        
+        # Load GIN preprocessed graphs
+        pyg_dataset = RelationalGeometryPipeline(
+            root=str(project_root / 'GIN_2/data'), 
+            mol_csv_path=str(MOLECULE_CSV_PATH),
+            atom_csv_path=str(ATOM_CSV_PATH),
+            target_cols=target_cols
+        )
+        
+        graph_dict = {}
+        for g in pyg_dataset:
+            clean_id = str(g.mol_id.item()) if torch.is_tensor(g.mol_id) else str(g.mol_id)
+            graph_dict[clean_id] = g
+            
+        # Load tokenized representations
+        transformer_data = torch.load(TOKENIZED_CACHE_PATH, weights_only=False)
+        t_input_ids = transformer_data['input_ids']
+        t_attention_masks = transformer_data['attention_mask']
+        t_mol_ids = [str(m).strip() for m in transformer_data['mol_ids']]
+        scalers = transformer_data.get('scalers')
+        
+        token_dict = {}
+        for i, mol_id in enumerate(t_mol_ids):
+            token_dict[mol_id] = (t_input_ids[i], t_attention_masks[i])
+            
+        # Map smiles -> (graph, input_ids, attention_mask)
+        df_mol = pd.read_csv(MOLECULE_CSV_PATH)
+        df_mol['molecule_id'] = df_mol['molecule_id'].astype(str).str.strip()
+        smiles_map = df_mol.set_index('molecule_id')['smiles'].to_dict()
+        
+        for mol_id, smiles in smiles_map.items():
+            if mol_id in graph_dict and mol_id in token_dict:
+                cache_lookup[smiles] = (graph_dict[mol_id], token_dict[mol_id][0], token_dict[mol_id][1])
+                
+        print(f"Loaded {len(cache_lookup)} molecules from GIN and ChemBERTa preprocessed caches.")
+    except Exception as e:
+        print(f"Could not load preprocessed caches ({e}). Running entirely on-the-fly.")
+
+    # Helper function for generating features on the fly
+    from transformers import AutoTokenizer
+    from torch_geometric.data import Data
+    from torch_geometric.loader import DataLoader
+    
+    tokenizer = None
+    def generate_features_on_the_fly(smiles: str, tok, seed=42):
+        from GUI.core.inference import build_graph_tensors_from_smiles
+        try:
+            node_features, edge_indices, edge_attr, batch_index = build_graph_tensors_from_smiles(
+                smiles, random_seed=seed
+            )
+            x = torch.tensor(node_features, dtype=torch.float)
+            edge_index = torch.tensor(edge_indices, dtype=torch.long)
+            edge_attr = torch.tensor(edge_attr, dtype=torch.float)
+            graph = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+            
+            encoded = tok(smiles, padding='max_length', truncation=True, max_length=64, return_tensors='pt')
+            input_ids = encoded['input_ids'].squeeze(0)
+            attention_mask = encoded['attention_mask'].squeeze(0)
+            return graph, input_ids, attention_mask
+        except Exception as exc:
+            return None
+
+    # We will construct a list of final predictions
+    final_preds = [None] * len(smiles_list)
+    failures = []
+    
+    # We collect the indices of successful molecules for batched inference
+    successful_indices = []
+    batch_graphs = []
+    batch_input_ids = []
+    batch_attention_masks = []
+    
+    for idx, smiles in enumerate(smiles_list):
+        smiles = smiles.strip()
+        if smiles in cache_lookup:
+            graph, ids, mask = cache_lookup[smiles]
+            clean_graph = Data(x=graph.x, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
+            batch_graphs.append(clean_graph)
+            batch_input_ids.append(ids)
+            batch_attention_masks.append(mask)
+            successful_indices.append(idx)
+        else:
+            if tokenizer is None:
+                try:
+                    from GUI.core.inference import _resolve_explainability_model_path
+                    model_path_hf = _resolve_explainability_model_path()
+                    tokenizer = AutoTokenizer.from_pretrained(str(model_path_hf), local_files_only=True)
+                except Exception:
+                    tokenizer = AutoTokenizer.from_pretrained("seyonec/ChemBERTa-zinc-base-v1")
+            
+            # Generate features for multiple conformers
+            conf_feats = []
+            for c in range(n_conformers):
+                feat = generate_features_on_the_fly(smiles, tokenizer, seed=17 + c)
+                if feat is not None:
+                    conf_feats.append(feat)
+            
+            if conf_feats:
+                # Add each conformer to the batch, mapping them to the same global index
+                for feat in conf_feats:
+                    graph, ids, mask = feat
+                    clean_graph = Data(x=graph.x, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
+                    batch_graphs.append(clean_graph)
+                    batch_input_ids.append(ids)
+                    batch_attention_masks.append(mask)
+                    successful_indices.append(idx)
             else:
-                all_preds.append(prediction)
+                failures.append((smiles, "Feature generation failed"))
+                final_preds[idx] = np.full(len(target_cols), np.nan)
 
     if failures:
-        print(f"\nEncountered {len(failures)} failures during inference.")
+        print(f"\nEncountered {len(failures)} failures during feature preparation.")
 
-    y_pred, y_true = np.array(all_preds), true_targets
+    if successful_indices:
+        from torch.utils.data import Dataset
+        
+        class InferenceDataset(Dataset):
+            def __init__(self, graphs, ids, masks):
+                self.graphs = graphs
+                self.ids = ids
+                self.masks = masks
+            def __len__(self):
+                return len(self.graphs)
+            def __getitem__(self, idx):
+                return {
+                    'graph': self.graphs[idx],
+                    'input_ids': self.ids[idx],
+                    'attention_mask': self.masks[idx]
+                }
+                
+        inf_dataset = InferenceDataset(batch_graphs, batch_input_ids, batch_attention_masks)
+        loader = DataLoader(inf_dataset, batch_size=256, shuffle=False, num_workers=0)
+        
+        inferred_preds = []
+        with torch.no_grad():
+            for batch in tqdm(loader, desc="Running batched PyTorch inference"):
+                b_graph = batch['graph'].to(device)
+                b_ids = batch['input_ids'].to(device)
+                b_mask = batch['attention_mask'].to(device)
+                
+                preds = model(b_graph, b_ids, b_mask)
+                inferred_preds.append(preds.cpu())
+                
+        y_pred_scaled = torch.cat(inferred_preds, dim=0).numpy()
+        
+        # Descale predictions
+        if scalers is not None:
+            for i, col in enumerate(target_cols):
+                if col in scalers:
+                    y_pred_scaled[:, i] = scalers[col].inverse_transform(y_pred_scaled[:, i].reshape(-1, 1)).flatten()
+        else:
+            print("Warning: Training scalers not found. Outputting raw scaled predictions.")
+            
+        # Group and average predictions by global index
+        pred_dict = {}
+        for local_idx, global_idx in enumerate(successful_indices):
+            if global_idx not in pred_dict:
+                pred_dict[global_idx] = []
+            pred_dict[global_idx].append(y_pred_scaled[local_idx])
+            
+        for global_idx, preds_list in pred_dict.items():
+            final_preds[global_idx] = np.mean(preds_list, axis=0)
+
+    y_pred = np.array(final_preds)
+    y_true = true_targets
+    
+    # Calculate metrics
     results = {}
     for i, col in enumerate(target_cols):
         valid_idx = ~np.isnan(y_pred[:, i]) & ~np.isnan(y_true[:, i])
@@ -85,8 +427,8 @@ def evaluate_all_properties_with_inference(
                 error_kcal_mol = np.abs(t - p) * EV_TO_KCAL_MOL
                 metrics['Chem. Acc. (%)'] = np.mean(error_kcal_mol <= 1.0) * 100.0
         results[col] = metrics
-
-    return results, y_pred, y_true, processed_smiles
+        
+    return results, y_pred, y_true, smiles_list
 
 if __name__ == "__main__":
     freeze_support()
@@ -99,7 +441,7 @@ if __name__ == "__main__":
     MOLECULE_CSV_PATH = project_root / "Dataset/New_QM9/molecule_properties.csv"
     # Checkpoint path — used to load saved split indices (Bug 3 fix)
     CHECKPOINT_PATH = project_root / "models" / "best_hybrid_model.pth"
-    model_path, N_WORKERS, N_CONFORMERS = None, 1, 1  # -1 uses cpu_count() for parallel processing
+    model_path, N_WORKERS, N_CONFORMERS = str(CHECKPOINT_PATH), 1, 1  # -1 uses cpu_count() for parallel processing
 
     if not (TOKENIZED_CACHE_PATH.exists() and MOLECULE_CSV_PATH.exists()):
         print("Dataset files not found. Cannot run evaluation.")
@@ -119,21 +461,22 @@ if __name__ == "__main__":
 
     df_mol_aligned = df_mol.set_index('molecule_id').loc[valid_mol_ids]
     
-    # Fix for old model: Apply QM9 delta learning. This converts delta cols to eV
-    # and subtracts the atomic reference energies (which the old model learned).
-    df_mol_aligned = df_mol_aligned.reset_index()
-    df_mol_aligned = apply_qm9_delta_learning(df_mol_aligned, smiles_col='smiles', target_cols=TARGET_COLS)
-    df_mol_aligned = df_mol_aligned.set_index('molecule_id')
-
-    original_targets_aligned = df_mol_aligned[TARGET_COLS].to_numpy(dtype=np.float64)
-
-    # Convert the remaining properties that are in Hartree but not delta targets.
-    # mu, alpha, r2, cv are in native units.
-    # homo, lumo, gap, zpve are in Hartree.
-    HARTREE_COLS = {'homo', 'lumo', 'gap', 'zpve'}
-    for i, col in enumerate(TARGET_COLS):
-        if col in HARTREE_COLS:
-            original_targets_aligned[:, i] *= HARTREE_TO_EV
+    # Load targets directly from the tokenized cache to ensure perfect consistency with training
+    t_targets = transformer_data['labels'].numpy()
+    t_scalers = transformer_data.get('scalers')
+    
+    # Descale the true targets to physical units using the same scalers as the model predictions
+    original_targets = np.copy(t_targets)
+    if t_scalers is not None:
+        for i, col in enumerate(TARGET_COLS):
+            if col in t_scalers:
+                original_targets[:, i] = t_scalers[col].inverse_transform(original_targets[:, i].reshape(-1, 1)).flatten()
+                
+    # Build a map from mol_id -> target row index in transformer_data
+    mol_id_to_idx = {mol_id: idx for idx, mol_id in enumerate(t_mol_ids)}
+    
+    # Extract original_targets aligned with valid_mol_ids
+    original_targets_aligned = np.array([original_targets[mol_id_to_idx[m]] for m in valid_mol_ids], dtype=np.float64)
 
     n_samples = len(valid_mol_ids)
 
@@ -180,7 +523,7 @@ if __name__ == "__main__":
         )
         results_df = pd.DataFrame.from_dict(all_results, orient='index')
         results_df.index.name = 'Property'
-        print("\n--- Hybrid Model Evaluation Results (ONNX) ---")
+        print("\n--- Hybrid Model Evaluation Results (PyTorch) ---")
         print(results_df.to_string(float_format="%.4f"))
         print("----------------------------------------------\n")
 
