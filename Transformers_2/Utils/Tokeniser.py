@@ -71,10 +71,28 @@ class Tokeniser:
 
         self.verbose = verbose
         self.model_name = model_name
-        try:
-            self.tokeniser = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
-        except Exception:
-            self.tokeniser = AutoTokenizer.from_pretrained(model_name, local_files_only=False)
+        
+        # 1. Dynamically locate the 'local_tokenizer' folder at the root of the project
+        # This navigates up from Transformers_2/Utils/Tokeniser.py to the main directory
+        current_file_path = os.path.abspath(__file__)
+        utils_dir = os.path.dirname(current_file_path)         # Transformers_2/Utils
+        transformers_dir = os.path.dirname(utils_dir)          # Transformers_2
+        project_root = os.path.dirname(transformers_dir)       # Root directory
+        
+        local_tokenizer_path = os.path.join(project_root, "local_tokenizer")
+
+        # 2. Check if the bundled directory exists; fallback to the original logic if it doesn't
+        if os.path.exists(local_tokenizer_path):
+            if self.verbose:
+                print(f"Loading bundled offline tokenizer from: {local_tokenizer_path}")
+            self.tokeniser = AutoTokenizer.from_pretrained(local_tokenizer_path, local_files_only=True)
+        else:
+            if self.verbose:
+                print(f"Bundled folder not found. Falling back to default behavior for {model_name}...")
+            try:
+                self.tokeniser = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+            except Exception:
+                self.tokeniser = AutoTokenizer.from_pretrained(model_name, local_files_only=False)
         self.max_length = max_length
         self.batch_size = batch_size
         self.mol_path = mol_path
