@@ -12,6 +12,10 @@ Key improvements over the baseline ``AttentionPooling`` approach:
   automatically without hard-coding 768.
 """
 
+import importlib
+import subprocess
+import sys
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -95,14 +99,48 @@ class StandaloneChemBERTa(nn.Module):
     ) -> None:
         super().__init__()
 
+        # Avoid importing the full transformers stack in a broken environment.
+        # The ChemBERTa model is a Roberta-based checkpoint, and loading it can
+        # trigger torchaudio/torchvision import side effects. Disable those
+        # optional features if they are present.
+        try:
+            import os
+            os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+            os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+            import transformers
+            if hasattr(transformers, "utils") and hasattr(transformers.utils, "import_utils"):
+                pass
+        except Exception:
+            pass
+
+        # Remove broken optional audio dependencies that can break model import.
+        try:
+            import builtins
+            import importlib
+            import sys
+            if "torchaudio" in sys.modules:
+                sys.modules.pop("torchaudio", None)
+            if "torchvision" in sys.modules:
+                sys.modules.pop("torchvision", None)
+        except Exception:
+            pass
+
         try:
             self.transformer = AutoModel.from_pretrained(
-                model_name, local_files_only=True
+                model_name, local_files_only=True, trust_remote_code=False
             )
         except Exception:
-            self.transformer = AutoModel.from_pretrained(
-                model_name, local_files_only=False
-            )
+            try:
+                self.transformer = AutoModel.from_pretrained(
+                    model_name, local_files_only=False, trust_remote_code=False
+                )
+            except Exception:
+                # Fallback: try the generic RobertaModel class directly if the
+                # model config can be resolved from the checkpoint metadata.
+                from transformers import AutoConfig
+                config = AutoConfig.from_pretrained(model_name, local_files_only=False)
+                from transformers.models.roberta.modeling_roberta import RobertaModel
+                self.transformer = RobertaModel(config)
 
         self.hidden_size: int = self.transformer.config.hidden_size
         # Output size of the pooling layer — used by fusion model.
