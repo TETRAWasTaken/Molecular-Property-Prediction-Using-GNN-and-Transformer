@@ -442,7 +442,7 @@ if __name__ == '__main__':
     
     epochs = 60
     freeze_transformer_epochs = 10  # Longer freeze prevents catastrophic forgetting
-    patience = 10
+    patience = 20
     early_stop_counter = 0
     best_val_loss = float('inf')
 
