@@ -66,6 +66,7 @@ class main:
         force_rebuild: bool = False,
         save_path: str = None,
         verbose: bool = True,
+        auto: bool = False,
     ):
         self.model = None
         self.mol_path = mol_path
@@ -74,6 +75,7 @@ class main:
         default_save_path = save_path or Paths().get_model_path()
         self.save_path = os.path.abspath(os.path.expanduser(default_save_path))
         self.verbose = verbose
+        self.auto = auto
 
         # NEW: QM9 Target Columns
         self.TARGET_COLS = ['mu', 'alpha', 'homo', 'lumo', 'gap', 'r2', 'zpve', 'u0', 'u298', 'h298', 'g298', 'cv']
@@ -86,7 +88,7 @@ class main:
         self.NUM_LAYERS = 7    # Deep GIN with Jumping Knowledge
         self.LEARNING_RATE = 3e-4
         self.WEIGHT_DECAY = 1e-5
-        self.EPOCHS = 10      # Increased for proper convergence
+        self.EPOCHS = 50      # Increased for proper convergence
         self.PATIENCE = 20
         
         # Smart device selector
@@ -100,11 +102,30 @@ class main:
         self.target_mean = None
         self.target_std = None
 
-    def _read_choice(self, prompt: str, valid_choices: tuple) -> str:
-        """Small helper to keep interactive command handling consistent."""
+    def _read_choice(self, prompt: str, valid_choices: tuple, default: str = None) -> str:
+        """Small helper to keep interactive command handling consistent.
+
+        In auto mode (or when stdin is unavailable), the *default* choice is
+        returned immediately so the pipeline can run unattended.
+        """
+        # Auto-mode: skip interaction entirely.
+        if self.auto:
+            chosen = default if default in valid_choices else valid_choices[0]
+            print(f"{prompt}  [auto-selected: '{chosen}']")
+            return chosen
+
         while True:
             print(prompt)
-            choice = input().strip().lower()
+            try:
+                choice = input().strip().lower()
+            except (EOFError, OSError):
+                # stdin is closed (e.g. AzureML job, subprocess with no tty).
+                chosen = default if default in valid_choices else valid_choices[0]
+                print(
+                    f"  [non-interactive environment detected — "
+                    f"auto-selecting '{chosen}']"
+                )
+                return chosen
             if choice in valid_choices:
                 return choice
             print("Invalid input")
@@ -162,7 +183,7 @@ class main:
         tprint("Molecular Property Prediction", font='block-medium')
         tprint("GIN Training Pipeline", font='block-medium')
 
-        cmd = self._read_choice("To perform data-preprocessing, enter 'S'", ("s",))
+        cmd = self._read_choice("To perform data-preprocessing, enter 'S'", ("s",), default="s")
         if cmd == "s":
             self.preprocess()
 
@@ -232,6 +253,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_path", type=str, default="GIN_2/outputs/GIN_model.pth", help="Optional custom model save path")
     parser.add_argument("--force_rebuild", action="store_true", help="Ignore cache and rebuild preprocessing")
     parser.add_argument("--quiet", action="store_true", help="Reduce preprocessing verbosity")
+    parser.add_argument("--auto", action="store_true", help="Run non-interactively (skips all input() prompts)")
     args = parser.parse_args()
 
     # Paths fallback (Update these if your Paths class handles them differently)
@@ -259,5 +281,6 @@ if __name__ == "__main__":
         force_rebuild=args.force_rebuild,
         save_path=resolved_save_path,
         verbose=not args.quiet,
+        auto=args.auto,
     )
     runner.run()

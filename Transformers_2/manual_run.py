@@ -25,7 +25,7 @@ class main:
         save_path: str = None,
         verbose: bool = True,
         batch_size: int = 32,
-        epochs: int = 20,
+        epochs: int = 50,
         learning_rate: float = 5e-5,
         max_length: int = 64,
         seed: int = 42,
@@ -313,7 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_path", type=str, default=None, help="Path to save the best model checkpoint")
     parser.add_argument("--cache_path", type=str, default=None, help="Path to save/load preprocessing cache")
     parser.add_argument("--batch_size", type=int, default=32, help="Training batch size")
-    parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--max_length", type=int, default=64, help="Tokenizer max sequence length")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")

@@ -440,7 +440,7 @@ if __name__ == '__main__':
         optimizer, T_0=10, T_mult=2, eta_min=1e-6
     )
     
-    epochs = 60
+    epochs = 50
     freeze_transformer_epochs = 10  # Longer freeze prevents catastrophic forgetting
     patience = 20
     early_stop_counter = 0
