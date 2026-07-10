@@ -99,8 +99,24 @@ def analyze_failure_cases(property_index: int, property_name: str, top_percent: 
 
 if __name__ == "__main__":
     # --- Configuration ---
-    # Analyze the 'u0' property (index 7)
-    PROPERTY_TO_ANALYZE_INDEX = 7
-    PROPERTY_TO_ANALYZE_NAME = "u0"
+    # You can change this to plot the error for a different property.
+    # The index corresponds to the order in TARGET_COLS.
+    # 0: mu, 1: alpha, 2: homo, 3: lumo, 4: gap, 5: r2, 6: zpve, 
+    # 7: u0, 8: u298, 9: h298, 10: g298, 11: cv
+    PROPERTY_NAMES = {
+        0: "mu",
+        1: "alpha",
+        2: "homo",
+        3: "lumo",
+        4: "gap",
+        5: "r2",
+        6: "zpve",
+        7: "u0",
+        8: "u298",
+        9: "h298",
+        10: "g298",
+        11: "cv"
+    }
 
-    analyze_failure_cases(PROPERTY_TO_ANALYZE_INDEX, PROPERTY_TO_ANALYZE_NAME)
+    for i, name in PROPERTY_NAMES.items():
+        analyze_failure_cases(i, name)
